@@ -1,0 +1,525 @@
+==========================================================================
+ AESFINAL: LINE-BY-LINE WALKTHROUGH OF THE WHOLE CODEBASE
+==========================================================================
+Files covered (line numbers refer to the ORIGINAL files in AESFINAL/):
+  readme.txt   how to build and run
+  utils.h      constants + prototypes for the AES primitives
+  utils.c      S-boxes, round steps, key expansion, Cipher / InvCipher
+  moops.h      prototypes for the modes of operation
+  moops.c      IV generation, XOR helper, PKCS#7, ECB / CBC / CFB / OFB / CTR
+  AES.c        command-line driver (main)
+  utils.o, moops.o   compiled object files (build artefacts, not source)
+
+Reading order that makes the code easiest to follow:
+  0. Big picture            1. utils.h        2. utils.c
+  3. moops.h                4. moops.c        5. AES.c
+  6. End-to-end trace of one run              7. Issues noticed
+
+A short legend used below:
+  u8        = unsigned char = one byte (typedef in utils.h)
+  state     = a 16-byte array that holds the AES state COLUMN-MAJOR:
+              s[r,c] = state[r + 4*c]   (so state[0..3] is column 0, ...)
+  w / ExpandedKey = 176-byte key schedule = 11 round keys x 16 bytes
+              round key number k occupies ExpandedKey[16k .. 16k+15]
+  GF(2^8)   = the byte arithmetic of AES; "+" is XOR; multiplication is
+              polynomial multiplication modulo x^8+x^4+x^3+x+1 ({11b})
+
+--------------------------------------------------------------------------
+0. THE BIG PICTURE
+--------------------------------------------------------------------------
+The program encrypts or decrypts a file with AES-128 in one of five modes.
+
+  AES.c  (main)      parses the command line, expands the key once, opens
+                     the files, and calls the right mode function.
+  moops.c            a mode function reads the file in 16-byte blocks,
+                     decides how blocks are combined (XOR with IV, chaining,
+                     counter...) and calls Cipher() / InvCipher() on 16
+                     bytes at a time.
+  utils.c            Cipher() / InvCipher() turn one 16-byte block into
+                     another using the round keys in ExpandedKey.
+
+Layers:   AES.c  ->  moops.c  ->  utils.c
+          (CLI)      (modes)      (block cipher)
+
+--------------------------------------------------------------------------
+readme.txt
+--------------------------------------------------------------------------
+Line 1  : says the folder contains a Rijndael AES implementation in C with
+          several modes of operation.
+Step 1  : `gcc -c utils.c` and `gcc -c moops.c` compile each file WITHOUT
+          linking, producing utils.o and moops.o. (-c = compile only.)
+Step 2  : `gcc -o AES AES.c utils.o moops.o -lcrypto` compiles AES.c and
+          links the three objects into the executable `AES`. `-lcrypto`
+          links OpenSSL's libcrypto because moops.c calls RAND_bytes.
+          (moops.c needs the OpenSSL headers to compile; on Debian/Ubuntu
+          that is the package libssl-dev.)
+Step 3  : usage `./AES e 1 test.pdf out.pdf YELLOW_SUBMARINE`:
+          argv[1] = e|d (encrypt/decrypt), argv[2] = mode digit 1..5,
+          argv[3] = input file, argv[4] = output file, argv[5] = key (the
+          first 16 characters are used as the AES-128 key).
+
+--------------------------------------------------------------------------
+1. utils.h
+--------------------------------------------------------------------------
+ 1  #ifndef UTILITIES_H        } include guard: the header body is compiled
+ 2  #define UTILITIES_H        } only once even if included several times
+                                 (the stray tab after the macro is harmless)
+ 4  #define NK 4               Nk: key length in 32-bit words (AES-128 = 4)
+ 5  #define NR 10              Nr: number of rounds (AES-128 = 10)
+                                 Only these two numbers make this AES-128;
+                                 the code is not generic over key sizes.
+ 7  typedef unsigned char u8;  shorthand for a byte
+ 8  void KeyExpansion(u8* key, u8* w);
+                               key: 16 key bytes; w: output, 176 bytes
+ 9  void Cipher(u8* state, u8* ExpandedKey);
+                               encrypt ONE 16-byte block in place
+10  void KeyExpansionEIC(u8* key, u8* dw);
+                               key schedule for the equivalent inverse cipher
+11  void InvCipher(u8* state, u8* ExpandedKey);
+                               decrypt ONE block in place
+12  void EqInvCipher(u8* state, u8* ExpandedKey);
+                               decrypt ONE block using the equivalent
+                               inverse cipher (needs the dw schedule)
+14  #endif                     closes the include guard.
+Note: the per-step functions (SubBytes, ShiftRows, ...) are NOT declared
+here; they are internal to utils.c (they are not `static`, but no other file
+uses them).
+
+--------------------------------------------------------------------------
+2. utils.c
+--------------------------------------------------------------------------
+Lines 1-2
+  #include <emmintrin.h>   SSE2 intrinsics: defines the type __m128i (a
+                           128-bit register value) and _mm_xor_si128 (XOR of
+                           two 128-bit values in one instruction).
+  #include "utils.h"       gets u8, NK, NR and the prototypes.
+
+Lines 4-21: the S-box
+  `const u8 sbox[256]` is the AES substitution table. Entry sbox[x] is
+  S(x). It is written as 16 rows (lines 6-21) of 16 bytes; the row is the
+  high nibble of x and the column is the low nibble. Examples:
+     sbox[0x00] = 0x63  (first entry, line 6)
+     sbox[0x53] = 0xed  (row 5, column 3 = 4th entry of the 6th row)
+  Each entry is S(b) = affine( b^-1 in GF(2^8) ) with {00} -> {63}; the
+  table simply stores the 256 results so no field arithmetic is needed at
+  run time. `const` places it in read-only memory.
+
+Lines 23-40: the inverse S-box
+  `const u8 InvSbox[256]` satisfies InvSbox[sbox[x]] = x. Example:
+  sbox[0x53] = 0xed, InvSbox[0xed] = 0x53. Used only for decryption.
+
+Lines 43-45: the round constants
+  `const u8 Rcon[10] = {0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1B,0x36}`
+  Rcon[j-1] is the LEFT byte of FIPS' Rcon[j] = [x^(j-1),0,0,0]. Each value
+  is the previous one times {02} in GF(2^8); after {80} the reduction
+  gives {1b}, then {36}. (The other three bytes of each constant are zero,
+  so only one byte is stored.)
+
+Lines 47-66: SubBytes
+  47      comment. 48 `void SubBytes(u8* state)` takes the 16-byte state.
+  50-65   one line per byte: state[i] = sbox[state[i]];  for i = 0..15.
+          The byte's VALUE is used as an index into the table and the
+          result overwrites the byte. This is "loop unrolling": instead of
+          `for (i<16)`, the 16 assignments are written out, which removes
+          the loop counter, the comparison and the branch (the paper's
+          section 3.1). Columns/rows do not matter here: each byte is
+          independent.
+
+Lines 68-87: InvSubBytes
+  Identical structure, using InvSbox (assignments on lines 71-86). Undoes SubBytes.
+
+Lines 89-112: ShiftRows
+  ShiftRows rotates row r LEFT by r. With state[r+4c], row r consists of
+  the bytes at indices r, r+4, r+8, r+12.
+  Row 0 (indices 0,4,8,12): not touched.
+  Row 1 (indices 1,5,9,13), rotate left by 1:  [a b c d] -> [b c d a]
+    92  temp = state[1]            save a
+    93  state[1]  = state[5]       b moves to column 0
+    94  state[5]  = state[9]       c to column 1
+    95  state[9]  = state[13]      d to column 2
+    96  state[13] = temp           a wraps to column 3
+  Row 2 (indices 2,6,10,14), rotate left by 2: [a b c d] -> [c d a b]
+    which is two swaps: (state[2] <-> state[10]) lines 99-101 and
+    (state[6] <-> state[14]) lines 102-104.
+  Row 3 (indices 3,7,11,15), rotate left by 3 (= right by 1):
+    [a b c d] -> [d a b c]
+    107 temp = state[15]           save d
+    108 state[15] = state[11]      c moves right
+    109 state[11] = state[7]       b moves right
+    110 state[7]  = state[3]       a moves right
+    111 state[3]  = temp           d wraps to the left end
+  Check against the specification s'[r,c] = s[r,(c+r) mod 4]:
+  s'[1,0] = s[1,1] i.e. state[1] = state[5] (line 93). OK.
+
+Lines 114-137: InvShiftRows
+  The reverse: rotate row r RIGHT by r.
+  Row 1: lines 117-121: temp = state[13]; state[13]=state[9]; state[9] =
+         state[5]; state[5] = state[1]; state[1] = temp.  ([a b c d] ->
+         [d a b c]).
+  Row 2: lines 124-129: the same two swaps as in ShiftRows (rotation by 2
+         is its own inverse).
+  Row 3: lines 132-136: temp = state[3]; state[3]=state[7]; state[7] =
+         state[11]; state[11] = state[15]; state[15] = temp
+         ([a b c d] -> [b c d a]).
+
+Lines 139-142: xtime
+  `u8 xtime(u8 b)` multiplies b by {02} in GF(2^8).
+  b << 1 is the left shift (in int; bit 8 may be set).
+  b >> 7 is the top bit b7 (0 or 1).
+  (b >> 7) * 0x1B is 0x1B if b7 = 1 else 0: this is the reduction by m(x),
+  done with a multiplication instead of an `if`, so the code takes the same
+  time for every input (no data-dependent branch).
+  XOR combines them; the return converts to u8, which drops the overflow bit
+  (bit 8) - exactly the removal of x^8 in the reduction.
+  Example: b = 0x57 -> 0xae. b = 0xae -> 0x15c ^ 0x1b = 0x147 -> u8 0x47.
+
+Lines 144-177: MixColumns
+  The function takes the whole 16-byte state and mixes its four columns.
+  For ONE column [a0,a1,a2,a3] the matrix equation is
+     a0' = 2a0 + 3a1 + a2 + a3     a1' = a0 + 2a1 + 3a2 + a3
+     a2' = a0 + a1 + 2a2 + 3a3     a3' = 3a0 + a1 + a2 + 2a3
+  and the code uses the identity  ai' = ai + xtime(ai + a(i+1)) + t  with
+  t = a0+a1+a2+a3  (indices mod 4):
+  147  t = s[0]^s[1]^s[2]^s[3]    the column sum t
+  148  temp = s[0]                 save the ORIGINAL a0, because line 149
+                                  overwrites s[0] but line 152 needs a0
+  149  s[0] ^= xtime(s[0]^s[1]) ^ t      a0' = a0 + xtime(a0+a1) + t
+  150  s[1] ^= xtime(s[1]^s[2]) ^ t      a1' = a1 + xtime(a1+a2) + t
+  151  s[2] ^= xtime(s[2]^s[3]) ^ t      a2' = a2 + xtime(a2+a3) + t
+  152  s[3] ^= xtime(s[3]^temp) ^ t      a3' = a3 + xtime(a3+a0) + t
+  Order matters and is safe: line 150 uses s[1] and s[2], which are still
+  unchanged (only s[0] has changed); line 151 uses s[2], s[3] unchanged;
+  line 152 uses s[3] and the saved a0.  Why this equals the matrix: e.g.
+  a0' = a0 + 2a0 + 2a1 + (a0+a1+a2+a3) = 2a0 + 3a1 + a2 + a3 (a0 cancels).
+  Lines 154-160 do column 1 (s[4..7]), 162-168 column 2 (s[8..11]),
+  170-176 column 3 (s[12..15]): same code with offsets 4, 8, 12.
+  Worked example: column (db,13,53,45) -> (8e,4d,a1,bc).
+
+Lines 179-210: InvMixColumns
+  The inverse matrix has coefficients {0e},{0b},{0d},{09}; instead of
+  multiplying by those, the code uses P. Barreto's factorisation
+  InvMix = Mix x P, where P = circulant({05},{00},{04},{00}):
+  181  u = xtime(xtime(s[0]^s[2]))     u = {04}(a0 + a2)
+  182  v = xtime(xtime(s[1]^s[3]))     v = {04}(a1 + a3)
+  183-186  s[0]^=u; s[1]^=v; s[2]^=u; s[3]^=v
+           a0 <- a0 + 4a0 + 4a2 = 5a0 + 4a2, a1 <- 5a1 + 4a3,
+           a2 <- 4a0 + 5a2, a3 <- 4a1 + 5a3   (that is the product P x column)
+  Lines 188-207 repeat for columns 1,2,3.
+  209  MixColumns(s)   applies the normal MixColumns to all four columns.
+  Result: Mix(P(column)) = InvMix(column).
+
+Lines 212-219: AddRoundKey
+  212  takes the state, the whole schedule and a round number (0..10).
+  214  reinterprets the 16 state bytes as one 128-bit vector (pointer cast).
+  215  same for the round key: ExpandedKey + 16*round is the start of the
+       round's 16 bytes.
+  218  `*stateVec = _mm_xor_si128(*stateVec, *roundKeyVec)` loads both 128-bit
+       values, XORs them in a single SSE2 instruction and stores the result
+       into the state. Net effect: state[i] ^= key[16*round + i] for all 16
+       bytes. The state and key are laid out the same way (column-major
+       words), so XORing byte i with byte i is XORing column c with word
+       w[4*round + c].
+  (Caveat: dereferencing a __m128i* requires 16-byte alignment, which the
+  compiler may assume; it has worked on your build.)
+
+Lines 221-253: KeyExpansion (AES-128)
+  222  KeyExpansion(u8* key, u8* w): key = 16 key bytes, w = 176 output bytes.
+  223  temp[4] holds one word.
+  226-227  copy the 16 key bytes to w[0..15]: these are words w0..w3.
+  230  for i = NK .. 4*(NR+1)-1 = 4 .. 43: i is the index of the word to be
+       created. Word i occupies bytes 4i..4i+3.
+  232-235  temp = w[i-1] (copy the previous word, 4 bytes).
+  238  if (i % NK == 0): every 4th word (i = 4, 8, ..., 40) needs the extra
+       transformation:  temp = SubWord(RotWord(temp)) XOR Rcon[i/4]
+  240  t = temp[0]   save the first byte (it will wrap to the end)
+  241  temp[0] = sbox[temp[1]] ^ Rcon[(i/NK)-1]
+       RotWord moves byte 1 to position 0; SubWord replaces it by S(byte);
+       Rcon is XORed into the first byte only. Rcon index is (i/4)-1 because
+       the array starts at 0 but the FIPS index j = i/4 starts at 1.
+  242  temp[1] = sbox[temp[2]]    243 temp[2] = sbox[temp[3]]
+  244  temp[3] = sbox[t]          (the old first byte goes last, after S)
+  248-251  w[i] = w[i-NK] ^ temp, bytewise: the word 4 positions earlier
+       (16 bytes earlier) XORed with temp.
+  Result: w[4] = a0fafe17 for the key 2b7e1516 28aed2a6 abf71588 09cf4f3c.
+
+Lines 255-292: KeyExpansionEIC
+  Same expansion, but it fills TWO arrays: a local w (the ordinary schedule,
+  still needed to compute later words) and the output dw.
+  257  `u8 w[176], temp[4]`
+  260-261  dw[j] = w[j] = key[j] (chained assignment)
+  264  note `u8 i` here (it reaches 43, below 256, so it does not overflow).
+  266-279  as in KeyExpansion.
+  282-285  dw[..] = w[..] = w[4(i-NK)+..] ^ temp[..]: write the new word into
+       both arrays.
+  288-291  for round = 1..9: InvMixColumns(dw + 16*round) transforms the
+       round key number `round` as if it were a state (a 16-byte block of
+       4 columns). The first (0) and last (10) round keys stay unchanged.
+       This is the modified schedule needed by EqInvCipher.
+  (InvMixColumns is defined above, so no prototype is required.)
+
+Lines 294-311: Cipher
+  295  encrypts one 16-byte block in place.
+  297  AddRoundKey(state, ExpandedKey, 0)      initial whitening.
+  300  for (u8 round = 1; round < NR; ++round) rounds 1..9:
+  301  SubBytes   302 ShiftRows   303 MixColumns   304 AddRoundKey(round)
+  308-310  final round: SubBytes, ShiftRows, AddRoundKey(...,10) with no
+       MixColumns. The literal 10 equals NR.
+  Total: 1 + 9 + 1 = 11 AddRoundKey calls, 10 SubBytes, 10 ShiftRows,
+  9 MixColumns.
+
+Lines 313-327: InvCipher
+  315  AddRoundKey(...,10)        undo the last key addition
+  317  for (round = NR-1; round > 0; round--)   rounds 9 down to 1:
+  318  InvShiftRows  319 InvSubBytes  320 AddRoundKey(round)  321 InvMixColumns
+       (InvShiftRows and InvSubBytes commute, so their order does not matter.
+       AddRoundKey comes BEFORE InvMixColumns because in encryption
+       MixColumns came before AddRoundKey.)
+  324-326  InvShiftRows; InvSubBytes; AddRoundKey(...,0).
+
+Lines 329-342: EqInvCipher
+  Same step ORDER as Cipher but with inverse steps, and it expects the dw
+  schedule from KeyExpansionEIC:
+  331  AddRoundKey(10)
+  333  loop round = 9..1: InvSubBytes, InvShiftRows, InvMixColumns,
+       AddRoundKey(round)
+  340-342  InvSubBytes, InvShiftRows, AddRoundKey(0).
+  It is not called by main(); the modes use InvCipher.
+
+--------------------------------------------------------------------------
+3. moops.h
+--------------------------------------------------------------------------
+ 1-2   include guard MODEOFOPERATIONS_H.
+ 4     typedef unsigned char u8 (repeated; a duplicate typedef is allowed in
+       C11).
+ 5-12  prototypes of the mode functions. They take the input FILE*, the
+       output FILE* and the key schedule. ofb and ctr have an extra `char
+       choice` ('e' or 'd') because encryption and decryption are the same
+       operation except for how the IV is written/read.
+ Note: the header uses FILE but does not include <stdio.h>; it works
+ because the .c files include <stdio.h> BEFORE this header.
+
+--------------------------------------------------------------------------
+4. moops.c
+--------------------------------------------------------------------------
+Lines 1-7: includes
+  stdio.h (fread, fwrite, fseek, ftell, perror, fprintf),
+  stdlib.h (exit, EXIT_FAILURE),
+  openssl/rand.h (RAND_bytes: cryptographically secure random bytes),
+  unistd.h (ftruncate),
+  emmintrin.h (SSE2),
+  moops.h and utils.h (prototypes, u8, Cipher/InvCipher).
+
+Lines 9-10: global IV
+  `unsigned char IV[16]` is a GLOBAL 16-byte buffer. It is used in three
+  roles: the initialisation vector, the chaining register (CBC), and the
+  keystream/feedback register (CFB, OFB). Because it is global, all mode
+  functions share it (the program only runs one mode per execution).
+
+Lines 12-18: generate_iv
+  RAND_bytes(IV, 16) fills IV with random bytes and returns 1 on success
+  (0 or -1 on failure). The test `!RAND_bytes(...)` catches the 0 case and
+  then the program prints an error and exits; a return of -1 (not supported)
+  would slip through, since !(-1) is 0. 16 bytes = one AES block.
+
+Lines 20-25: xor
+  xor(a, b) computes a = a XOR b on 16 bytes with one SSE2 instruction
+  (same pointer-cast trick as AddRoundKey). IMPORTANT: the result goes into
+  the FIRST argument; the second is left unchanged. (In C, `xor` is just a
+  function name here; it is not a keyword in C, only an alternative token in
+  C++.)
+
+Lines 27-42: pkcs7_unpad
+  Input: the last decrypted 16-byte block. PKCS#7 means the padding is p
+  bytes each equal to p, 1 <= p <= 16.
+  29  pad_value = plaintext[15]   the last byte is p
+  30  valid only if 0 < p <= 16
+  31-36  check that the last p bytes (indices 15, 14, ..., 16-p) all equal p;
+         otherwise print "Invalid PKCS#7 padding" and exit
+  37  return p (the number of bytes to remove)
+  38-41  p out of range: same error.
+
+Lines 44-60: ecb_encrypt
+  45  in_block: the 16-byte buffer.   46 bytes_read: how many bytes fread got
+  49  while ((bytes_read = fread(in_block,1,16,ifile)) == 16): read 16 bytes;
+      the loop continues only while a FULL block was read.
+  50  Cipher(in_block, ExpandedKey)   encrypt in place
+  51  fwrite(in_block, 1, 16, ofile)  write the 16 ciphertext bytes
+  After the loop bytes_read is 0..15: the size of the final partial block.
+  55  padding_value = 16 - bytes_read   (1..16; if the file length is a
+      multiple of 16, bytes_read = 0 and a whole block of 0x10 is added)
+  56-57  fill in_block[bytes_read..15] with that value
+  58-59  encrypt and write the last block.
+  So ciphertext length = (floor(len/16)+1)*16.
+
+Lines 62-78: ecb_decrypt
+  63  in_block (and an unused out_block); 64 unused bytes_read.
+  67  while (fread(in_block,1,16,ifile) > 0): read blocks until EOF
+  68-69  InvCipher in place and write the 16 plaintext bytes (including the
+         padding of the final block)
+  After the loop in_block still holds the LAST decrypted block (the final
+  failed fread returns 0 and does not modify the buffer).
+  72  pad_len = pkcs7_unpad(in_block)   validates and returns p
+  73  fseek(ofile, -pad_len, SEEK_END)  move p bytes before the end
+  75  current_pos = ftell(ofile)        the position = the true plaintext size
+  77  ftruncate(fileno(ofile), current_pos)  cut the file there (this removes
+      the padding bytes already written).
+
+Lines 80-108: cbc_encrypt (c_i = E(m_i XOR c_(i-1)), c_(-1) = IV)
+  81  plaintext buffer; 82 bytes_read
+  83  generate_iv()    random IV into the global IV
+  85  fwrite(IV,1,16,ofile)   the IV is stored as the first 16 bytes of the
+      ciphertext (needed for decryption)
+  88  read full 16-byte blocks
+  90-91  IV[i] ^= plaintext[i]   the IV buffer now holds m_i XOR (previous
+         ciphertext); initially previous = the IV
+  93  Cipher(IV, ExpandedKey)    in place: IV now equals c_i
+  95  fwrite(IV,...)             write c_i. IV (= c_i) is automatically the
+      chaining value for the next block.
+  99  padding_value = 16 - bytes_read   (PKCS#7 for the last block)
+  101-102  fill plaintext[bytes_read..15] with the padding value
+  104-105  XOR with the chaining value   106 encrypt   107 write.
+  Note the buffer reuse: IV is both register and output.
+
+Lines 110-140: cbc_decrypt (m_i = D(c_i) XOR c_(i-1))
+  111  input, temp, output (output unused); 112 bytes_read unused
+  115  fread(IV,1,16,ifile)   read the IV (first 16 bytes) into the global IV
+  118  while (fread(input,1,16,ifile) > 0)  read each ciphertext block
+  119-120  temp = copy of c_i (we need it as the next chaining value, because
+           InvCipher will overwrite `input`)
+  122  InvCipher(input)   input = D(c_i)
+  124-125  input[i] ^= IV[i]   XOR with the previous ciphertext (or the IV):
+           input is now m_i
+  127-128  IV = temp          the chaining value for the next block = c_i
+  130  fwrite(input,...)     write m_i (16 bytes)
+  134  pkcs7_unpad(input)   the last plaintext block gives p
+  135-139  fseek / ftell / ftruncate as in ECB: cut off the padding.
+
+Lines 142-158: cfb_encrypt (128-bit CFB: c_i = E(c_(i-1)) XOR m_i)
+  145-147  random IV, written first
+  150  while ((bytes_read = fread(in_block,1,16,ifile)) > 0)  also processes
+       a final PARTIAL block (no padding in CFB)
+  151  Cipher(IV)   IV now holds E(previous ciphertext)
+  153  xor(IV, in_block)   IV = E(...) XOR m_i = c_i
+  156  fwrite(IV,1,bytes_read,ofile)   writes only bytes_read bytes (the last
+       block may be shorter). IV (= c_i) feeds the next block.
+
+Lines 160-177: cfb_decrypt (m_i = E(c_(i-1)) XOR c_i)
+  165  fread(IV,...)   read the IV
+  168  loop over ciphertext blocks (partial last block allowed)
+  169  Cipher(IV)      NOTE: decryption uses the FORWARD cipher
+  170  xor(IV,in_block)   IV = E(c_(i-1)) XOR c_i = m_i
+  171  fwrite(IV,1,16,ofile)   <-- always writes 16 bytes (see issue 2 below)
+  174-175  IV = in_block (the ciphertext c_i becomes the next feedback value)
+
+Lines 179-195: ofb (c_i = z_i XOR m_i, z_i = E(z_(i-1)), z_0 = IV)
+  182  generate_iv()   always called (in decrypt the value is discarded)
+  184  if (choice == 'e') write the IV to the output file ...
+  185  else read the IV from the input file (overwrites the generated one)
+  188  loop over blocks (a partial last block is fine)
+  189  Cipher(IV)    IV becomes z_i (the new keystream block)
+  190  xor(in_block, IV)    in_block = m_i XOR z_i   (the result is stored in
+       the FIRST argument, in_block - correct here)
+  193  fwrite(in_block,1,bytes_read,ofile)  only bytes_read bytes.
+  The same function does encryption and decryption since XOR is symmetric.
+
+Lines 197-221: ctr (c_i = E(T_i) XOR m_i)
+  198  generate_iv()      random 16 bytes
+  200  encrypt: write the IV to the file FIRST (all 16 random bytes)
+  201  decrypt: read the IV from the file
+  204  IV[0]=IV[1]=IV[2]=IV[3]=0x00   set the first four bytes (the 32-bit
+       block counter) to zero. Thus the effective nonce is IV[4..15] (96
+       bits) and the counter lives in IV[0..3].
+  206  input: the counter block; in_block: data.   207 bytes_read.
+  210  loop over data blocks (partial last block allowed)
+  211-212  input = IV   copy the current counter block T_i
+  214  Cipher(input)    input = E_K(T_i)   (the keystream block)
+  215  xor(input, in_block)    <-- BUG (see issue 1): xor stores the result
+       in its FIRST argument (input), but line 216 writes in_block, which is
+       unchanged. The fix is xor(in_block, input).
+  216  fwrite(in_block,1,bytes_read,ofile)
+  218-219  increment the 32-bit counter in IV[0..3]: add 1 to IV[0]; if the
+       byte did not wrap to 0 stop (`break`), otherwise carry to IV[1] etc.
+       (a little-endian counter).
+
+--------------------------------------------------------------------------
+5. AES.c  (main)
+--------------------------------------------------------------------------
+Lines 1-4: includes: stdio.h (printf, fopen, ...), stdlib.h (exit), and the
+  two project headers.
+Lines 7-18: print_usage(program_name)
+  prints the expected syntax and the meaning of the operation and mode
+  arguments (printf with %s inserts the program name; \n ends each line).
+Line 20: int main(int argc, char* argv[])
+  argc = number of arguments (including the program name), argv = the strings.
+Lines 21-24: if (argc != 6) print usage and return 1 (error). The program
+  needs exactly: ./AES <op> <mode> <in> <out> <key>.
+Line 25: char *mode = argv[1]; this variable is never used afterwards
+  (the code reads argv[1][0] directly).
+Line 26: u8 key[16]; the AES-128 key (16 bytes).
+Lines 29-30: for i = 0..15: sscanf(&argv[5][i], "%c", &key[i]);
+  `sscanf` reads one character from the string starting at argv[5]+i and
+  stores it in key[i]. The net effect is key[i] = argv[5][i], i.e. the key
+  is the first 16 characters of the 5th argument (as raw bytes, not hex).
+  If the argument is shorter than 16 characters, the loop reads beyond the
+  string end (undefined behaviour).
+Lines 33-34: u8 ExpandedKey[176]; KeyExpansion(key, ExpandedKey);
+  the 11 round keys are computed ONCE; every block uses them.
+Lines 37-38: fopen(argv[3],"rb") input binary read; fopen(argv[4],"wb")
+  output binary write (this creates/truncates the output file immediately).
+Lines 40-43: if either file failed to open, perror prints the system error
+  and the program exits.
+Line 45: if (argv[1][0] == 'e') encrypt branch, otherwise (any other first
+  letter) the decrypt branch at line 63.
+Lines 46-62: switch on argv[2][0], the mode digit:
+  '1' ecb_encrypt, '2' cbc_encrypt, '3' cfb_encrypt, '4' ofb(...,'e'),
+  default (anything else, i.e. '5') ctr(...,'e').
+Lines 64-80: the same for decryption: ecb_decrypt, cbc_decrypt,
+  cfb_decrypt, ofb(...,'d'), default ctr(...,'d').
+Lines 83-85: fclose both files (flushes buffered output), return 0.
+
+--------------------------------------------------------------------------
+6. END-TO-END TRACE:   ./AES e 2 in.txt out.bin YELLOW_SUBMARINE
+--------------------------------------------------------------------------
+ 1. main: argc = 6 OK; key = "YELLOW_SUBMARINE" (exactly 16 characters).
+ 2. KeyExpansion(key, ExpandedKey): 4 key words + 40 derived words.
+ 3. in.txt and out.bin opened; argv[1][0]=='e' and argv[2][0]=='2' ->
+    cbc_encrypt.
+ 4. cbc_encrypt: generate_iv (random), write 16 IV bytes to out.bin.
+ 5. For each full 16-byte block of in.txt: IV ^= block; Cipher(IV):
+      AddRoundKey(0); 9 x [SubBytes, ShiftRows, MixColumns, AddRoundKey];
+      SubBytes, ShiftRows, AddRoundKey(10);
+    write the 16 bytes.
+ 6. Last partial block: PKCS#7 pad, same processing, write 16 bytes.
+ 7. Output size = 16 (IV) + 16*(floor(len/16)+1).
+ Decrypt: ./AES d 2 out.bin back.txt YELLOW_SUBMARINE -> cbc_decrypt reads
+    the IV, decrypts each block with InvCipher, XORs with the previous
+    ciphertext block, writes plaintext, then strips the padding by
+    truncating the output.
+
+--------------------------------------------------------------------------
+7. ISSUES NOTICED (correctness and robustness)
+--------------------------------------------------------------------------
+ 1. moops.c line 215: xor(input, in_block) -> must be xor(in_block, input).
+    As written, CTR mode (mode 5) output equals the plaintext (after the
+    16-byte IV). Round-trips still succeed because nothing is encrypted.
+    (AES_Presentation/code/moops.c has this one line fixed.)
+ 2. moops.c line 171: cfb_decrypt writes 16 bytes even for a final partial
+    block, so the decrypted file gets extra garbage bytes at the end unless
+    the length is a multiple of 16. Fix: fwrite(IV, 1, bytes_read, ofile).
+ 3. AES.c lines 29-30: if the key argument is shorter than 16 characters the
+    loop reads past the end of the string. Also the key is raw text (not
+    hex) and has no key-derivation step.
+ 4. AES.c lines 37-38: the output file is opened (and truncated) before
+    checking the input; using the same path for input and output destroys
+    the input.
+ 5. Padding-oracle caveat: pkcs7_unpad exits with a distinct error message.
+ 6. ecb_decrypt / cbc_decrypt on an EMPTY or truncated (not a multiple of 16)
+    ciphertext use an uninitialised/stale block for unpadding.
+ 7. utils.c AddRoundKey and moops.c xor dereference __m128i* casts of u8*
+    buffers: alignment/aliasing risk (works on x86-64 with this compiler).
+ 8. moops.h uses FILE without including <stdio.h> (works because of include
+    order); mode and some local variables (`mode`, `out_block`, `output`,
+    `bytes_read` in some functions) are unused.
+ 9. Modes that need no decryption direction (ofb, ctr) still call
+    generate_iv() before reading the IV in decrypt mode (harmless waste).
+10. Authentication: none of the modes authenticates the data (no MAC/GCM).

@@ -1,0 +1,11 @@
+main.aux
+main.log
+main.nav
+main.out
+main.snm
+main.toc
+main.vrb
+main.synctex.gz
+main.fdb_latexmk
+main.fls
+*.o

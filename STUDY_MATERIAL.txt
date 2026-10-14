@@ -1,0 +1,756 @@
+==========================================================================
+ AES (RIJNDAEL): STUDY MATERIAL AND SPEAKER NOTES
+ Companion to main.tex / main.pdf          Presenter: Argha Sardar (IISc)
+==========================================================================
+
+HOW TO USE THIS FILE
+  - One section per slide, in the order of the deck. The number in
+    brackets is the frame counter printed in the slide footer [nn/33].
+    The title slide and the black section-divider pages are not counted.
+  - Each section has: GOAL (why the slide exists), SAY (a script you can
+    speak from), KEY FACTS (formulas and numbers to have in your head),
+    INTUITION, WORKED EXAMPLE (where useful), LIKELY QUESTIONS, and the
+    SOURCE of every claim.
+  - Sources are abbreviated:
+      FIPS  = AES_Docs.pdf, NIST FIPS 197-upd1 (section numbers are FIPS's)
+      RAI   = the paper "Rijndael AES Implementation" (your AES.pdf)
+      CODE  = your AESFINAL folder (utils.c, moops.c, AES.c, readme.txt)
+      WIKI  = Wikipedia "Advanced Encryption Standard" (history slides)
+      WIKI2 = Wikipedia "Advanced Encryption Standard process"
+    Anything not in your two PDFs or the Wikipedia pages is marked
+    [OUTSIDE SOURCE] with its reference.
+
+NOTATION CHEAT SHEET (use it consistently while speaking)
+  s[r,c] or s_{r,c}   state byte in row r, column c, 0 <= r,c < 4
+  s' / s'_{r,c}       value after a transformation (FIPS convention)
+  (+)                 XOR = addition in GF(2^8)
+  (.) shown as "bullet"  multiplication in GF(2^8)
+  {57}                a byte written in hex (braces are FIPS notation)
+  m(x) = x^8+x^4+x^3+x+1  the reduction polynomial, byte {11b}
+  Nk = key length in 32-bit words (4, 6, 8)   Nb = 4 (state words)
+  Nr = number of rounds (10, 12, 14)          w[i] = key-schedule word i
+  The state is stored COLUMN-MAJOR: s[r,c] = in[r + 4c] = state[r+4c].
+
+IMPORTANT: THINGS I FOUND WHILE PREPARING (read before presenting)
+  1. BUG in your ctr() (moops.c, line 215 of AESFINAL):
+        xor(input, in_block);        // original
+     xor(a,b) stores a^b into its FIRST argument (a). Here the keystream
+     block is `input`, but the code then writes `in_block` (unchanged),
+     so the "ciphertext" equals the plaintext. Encrypt/decrypt round-trips
+     "work" only because the cipher is the identity: mode 5 output was
+     byte-for-byte the plaintext after the 16-byte IV.
+     Fix:   xor(in_block, input);
+     I did NOT touch AESFINAL/. The fixed line is applied only in
+     AES_Presentation/code/moops.c, and the CTR slide shows the fixed line
+     (the slide's source line says the operands were swapped). After the
+     fix: ciphertext differs from plaintext and decrypts correctly.
+  2. cfb_decrypt (moops.c) always writes 16 bytes, so a message whose length
+     is not a multiple of 16 decrypts with trailing garbage (my test: 42-byte
+     input came back as 48 bytes). cfb_encrypt is correct (writes bytes_read).
+     Fix: fwrite(IV, 1, bytes_read, ofile). CFB is not on the slides
+     (you skipped RAI 6.3), but be aware if asked.
+  3. RAI Section 3.3 derivation has a typo. It writes
+        Z = {01}A + {01}B + {02}C + {03}D
+          = (A+B+C+D) + D + {02}(C+D)          <-- wrong
+     The correct identity is
+          = (A+B+C+D) + C + {02}(C+D)          <-- C, not D
+     (check: t + C + 2C + 2D = A + B + D + 2C + 2D = A + B + 2C + 3D).
+     The listing in the paper and your code are correct:
+        a_i' = a_i + xtime(a_i + a_{i+1}) + t.
+     The slides use the correct form.
+  4. AddRoundKey casts u8* to __m128i* and dereferences. That is
+     technically an alignment/aliasing risk (the compiler may emit an
+     aligned load). It works on your x86-64 build; mention only if asked.
+  5. The AES-128 core is verified: with FIPS 197 App. B key
+     2b7e151628aed2a6abf7158809cf4f3c and plaintext
+     3243f6a8885a308d313198a2e0370734, Cipher() gives
+     3925841d02dc09fbdc118597196a0b32; InvCipher and EqInvCipher invert it.
+     ECB, CBC, OFB round-trip correctly; CTR needs fix #1.
+  6. Finalist names (MARS, RC6, Rijndael, Serpent, Twofish) and the
+     2 Jan 1997 / 12 Sep 1997 / Aug 1999 / 2 Oct 2000 dates are from WIKI2,
+     not from the main WIKI page you named (that page does not list them).
+
+==========================================================================
+TITLE SLIDE (not counted)
+==========================================================================
+GOAL  Introduce topic and speaker.
+SAY   "Good [morning]. I'm Argha Sardar from IISc. Today I'll walk through
+      the Advanced Encryption Standard, also called Rijndael: how the
+      algorithm is defined in FIPS 197, how a compact C implementation
+      realises it, and how it is used on long messages through modes of
+      operation."
+NOTE  The figure on the right is the "round machine": 16 S-boxes (Byte Sub),
+      the row permutation (Shift Row), the column mixer (Mix Column) and the
+      key injection (Add Round Key). Keep it in mind: slides 10-18 explain
+      each label.
+
+==========================================================================
+[01] AGENDA
+==========================================================================
+GOAL  Give the road map and fix the notation.
+SAY   Seven parts: introduction, preliminaries (state, finite field, S-box),
+      encryption, decryption, the look-up table implementation, modes of
+      operation, and finally our implementation and summary.
+      "I use FIPS 197 notation throughout: s_{r,c} for the state, a prime
+      for the transformed value, (+) for XOR and a bullet for multiplication
+      in GF(2^8)."
+LIKELY Q  "Does this cover AES-192/256?" -> The specification slides do
+      (Nk, Nr in general); the code is AES-128 only (NK=4, NR=10).
+
+==========================================================================
+[02] BLOCK CIPHERS
+==========================================================================
+GOAL  Define the object precisely.
+SAY   A block is a fixed-length bit string. A block cipher is a map
+      E: K x {0,1}^n -> {0,1}^n such that, for each key K, E_K is a
+      bijection on {0,1}^n. So it is a keyed family of permutations, and
+      decryption is just the inverse permutation D_K = E_K^{-1}.
+      For AES n = 128 and the key has 128, 192 or 256 bits.
+KEY FACTS
+      - Bijection is essential: without it decryption would be ambiguous.
+      - A block cipher alone only encrypts ONE block. Long messages need a
+        mode (part 06).
+      - FIPS notes "encryption/decryption" are informal names for
+        Cipher()/InvCipher(), because block ciphers have other uses too
+        (footnote 2 of FIPS section 5).
+SOURCE RAI s1; FIPS s3.1, s5.
+
+==========================================================================
+[03] HISTORY OF AES (1/2): THE COMPETITION
+==========================================================================
+GOAL  Show where AES came from.
+SAY   DES, published in 1977, was ageing. On 2 January 1997 NIST announced
+      it wanted an unclassified, publicly disclosed successor and asked for
+      comment. On 12 September 1997 it issued the formal call: block ciphers
+      with 128-bit blocks and 128/192/256-bit keys. Fifteen designs were
+      submitted in 1998. Two open conferences (August 1998 and March 1999)
+      discussed them, and in August 1999 NIST named five finalists: MARS,
+      RC6, Rijndael, Serpent and Twofish. Rijndael is by the Belgian
+      cryptographers Joan Daemen and Vincent Rijmen, and descends from their
+      earlier Square cipher. A third conference in April 2000 had each team
+      present, followed by a vote, and on 2 October 2000 NIST announced
+      Rijndael.
+KEY FACTS
+      - The process was open: submissions, public analysis, conferences.
+      - Criteria (WIKI2): security, performance on many platforms (PCs,
+        smart cards, hardware) and feasibility in constrained environments.
+      - Rijndael supports more block/key sizes; the standard fixes
+        block = 128 bits and the three key sizes.
+SOURCE WIKI2 (dates, finalists, conferences); WIKI ("derived from Square",
+      Belgian designers, 3 Sep 1999 submission, FIPS ref list); RAI s1
+      (1997 start, 15 candidates, 1999 five, 2000 selection).
+LIKELY Q  "Why was Rijndael chosen?" -> Combination of security margin,
+      speed in software and hardware, and low memory (WIKI2 criteria; the
+      NIST report is Nechvatal et al. 2001, reference [11]). I did not read
+      that report in detail.
+
+==========================================================================
+[04] HISTORY OF AES (2/2): STANDARD AND CRYPTANALYSIS
+==========================================================================
+SAY   NIST published AES as FIPS 197 on 26 November 2001; it took effect on
+      26 May 2002 and is also in ISO/IEC 18033-3. In June 2003 the US
+      government approved AES for classified information: SECRET with any
+      key size, TOP SECRET with 192 or 256-bit keys. FIPS 197 was updated on
+      9 May 2023 (update 1; our AES_Docs.pdf is this version).
+      On the attack side: the practical threats have been side channels,
+      e.g. cache-timing attacks by Bernstein (2005) and Osvik-Shamir-Tromer.
+      Mathematically, related-key attacks (2009) only hit AES-192/256 under
+      related keys, and the biclique attack of Bogdanov, Khovratovich and
+      Rechberger (2011) was the first key recovery on the FULL cipher:
+      2^126.2 operations for AES-128, only about four times faster than
+      brute force 2^128. Tao and Wu improved it in 2015 to 2^126.0,
+      2^189.9, 2^254.3. So: no practical attack on correctly implemented AES.
+      Hardware support came with Intel AES-NI (2010).
+KEY FACTS
+      - 2^126.2 vs 2^128 is a factor of about 3.5-4: academically notable,
+        practically irrelevant.
+      - AES-NI removes table look-ups, so no cache-timing leak (RAI s5.4,
+        which you chose to skip; [10] Intel white paper, May 2010).
+SOURCE WIKI (all dates and attack numbers); FIPS cover (9 May 2023);
+      RAI s5.1 (timing attacks on tables), s5.4 (AES-NI).
+CAUTION  The "2005-2010" row groups Bernstein 2005 and OST (conference 2005,
+      journal 2010). The 2022 NSA guidance on 256-bit keys for classified
+      data is on the Wikipedia page too, but I left it off the slide.
+
+==========================================================================
+[05] AES PARAMETERS
+==========================================================================
+SAY   Block is always 4 words = 128 bits (Nb = 4). The key length Nk and the
+      round count Nr vary: 4 words/10 rounds, 6/12, 8/14. AES-k is the
+      function Cipher(in, Nr, KeyExpansion(key)). The key schedule has
+      4(Nr+1) words; for AES-128 that is 44 words = 176 bytes.
+      On the right, the same constants in our code: utils.h defines NK=4 and
+      NR=10, and main() declares ExpandedKey[176] and calls KeyExpansion.
+      Our implementation is AES-128 only.
+KEY FACTS
+      - Why Nr+1 round keys: one initial AddRoundKey plus one per round.
+      - Table values: FIPS Table 3.
+LIKELY Q  "Why 10/12/14 rounds?" -> Chosen by the designers for a security
+      margin; the standard just fixes them. (Design rationale: Daemen-Rijmen
+      book, ref [5].)
+
+==========================================================================
+[06] BYTES, THE STATE AND WORDS
+==========================================================================
+GOAL  Make the data layout unambiguous; it explains the code indexing.
+SAY   The 16 input bytes in_0..in_15 are copied into a 4x4 state array
+      COLUMN BY COLUMN: s[r,c] = in[r + 4c]. So the first four input bytes
+      become column 0. A word is 4 bytes, and column c is a word v_c. The
+      key schedule is an array w of words; w[i..i+3] is four consecutive
+      words, i.e. one round key.
+      In the code the state is a flat array state[16], and
+      s_{r,c} = state[r + 4c]. Column c is the contiguous slice
+      state[4c..4c+3], which is why MixColumns processes s[0..3], s[4..7],
+      s[8..11], s[12..15]. A row is strided by 4: row 1 is state[1],
+      state[5], state[9], state[13].
+INTUITION  Column-major layout makes the column operations (MixColumns,
+      AddRoundKey with a word) cache-friendly, and makes the row operation
+      (ShiftRows) a permutation of indices.
+SOURCE FIPS s3.2-3.5 (Eq. 3.6, 3.7, Fig. 1); utils.h/utils.c.
+
+==========================================================================
+[07] ARITHMETIC IN GF(2^8): ADDITION AND MULTIPLICATION
+==========================================================================
+GOAL  Give the algebra used by SubBytes, MixColumns and the key schedule.
+SAY   A byte {b7...b0} is the polynomial b(x) = sum b_i x^i with
+      coefficients in {0,1}. Addition adds coefficients mod 2, which is
+      exactly XOR. Consequences: addition equals subtraction, and a (+) a
+      is zero. Example: {57} (+) {83} = {d4}.
+      Multiplication multiplies the polynomials and reduces modulo the fixed
+      irreducible polynomial m(x) = x^8+x^4+x^3+x+1, hex {11b}. Because m is
+      irreducible, GF(2^8) is a field: every nonzero byte has an inverse.
+      The inverse can be computed as b^254 (the multiplicative group has 255
+      elements, so b^255 = 1), or with the extended Euclidean algorithm.
+KEY FACTS
+      - {57}(+){83}: 01010111 XOR 10000011 = 11010100 = {d4}.
+      - GF(2^8) here is NOT integer arithmetic mod 256; do not mix them up.
+LIKELY Q  "Why this particular m(x)?" -> It is the polynomial fixed by the
+      standard; any irreducible degree-8 polynomial gives an isomorphic
+      field, this one is the Rijndael choice. [Design rationale: ref [5].]
+SOURCE FIPS s4.1-4.4; RAI s2.1.
+
+==========================================================================
+[08] XTIME: MULTIPLICATION BY {02}
+==========================================================================
+GOAL  Show that all constant multiplications reduce to one cheap primitive.
+SAY   Multiplying by x shifts the coefficient vector left by one. If the top
+      bit b7 was 1, the degree reaches 8 and we reduce: subtract (= XOR)
+      m(x), which in a byte is {1b}. That is xtime(b) = b bullet {02}.
+      Any constant is a sum of powers of {02}, so multiplication by it is a
+      few xtimes and XORs. Example with b = {57}:
+         {57}.{02} = {ae};  {04}: {47};  {08}: {8e};  {10}: {07}
+      and since {13} = {10} (+) {02} (+) {01},
+         {57}.{13} = {57} (+) {ae} (+) {07} = {fe}.
+      The Horner form for {15} = {01}(+){04}(+){10} is
+         b.{15} = b (+) xtime^2( b (+) xtime^2(b) ),
+      which uses only 4 xtimes.
+      On the right is our C code:
+         return (b << 1) ^ ((b >> 7) * 0x1B);
+      The naive version tests b&0x80 with a branch, which makes the running
+      time depend on the secret data. The masked version multiplies the bit
+      b7 (0 or 1) by 0x1B, so it executes the same instructions for every
+      input: constant time. (RAI also warns that inserting dummy
+      instructions to equalise timing can create power-analysis leaks.)
+VERIFY  0xae = 10101110: b7=1 -> (0xae<<1)=0x15c, low byte 0x5c, XOR 0x1b
+      = 0x47. Matches {04}.{57} = {47}.
+SOURCE FIPS s4.2 (Eq. 4.5-4.7); RAI s2.1; utils.c xtime().
+
+==========================================================================
+[09] THE S-BOX AS f o g
+==========================================================================
+GOAL  Explain what the 256-byte table encodes.
+SAY   SBox(b) = f(g(b)). Step 1, g: replace b by its multiplicative inverse
+      in GF(2^8), mapping {00} to {00}. This is the non-linear part. Step 2,
+      f: an affine map over bits: b'_i = b~_i + b~_{i+4} + b~_{i+5} + b~_{i+6}
+      + b~_{i+7} + c_i (indices mod 8) with c = {63}. The matrix form on the
+      right is the same equation: a circulant 8x8 matrix plus the constant
+      vector. g is an involution (its own inverse), f is bijective, so the
+      S-box is a bijection and SBox^{-1} = g o f^{-1}. In practice we use a
+      256-byte table.
+EXAMPLES  SBox({53}) = {ed}: row 5, column 3 of the S-box table.
+      SBox({00}) = {63}: g(0)=0, then f(0) = c = {63}.
+WHY   Inversion gives strong non-linearity (resists differential and linear
+      cryptanalysis); the affine map removes fixed points and algebraic
+      structure that the pure inverse has. [Design rationale: ref [5].]
+SOURCE FIPS s5.1.1 (Eq. 5.2-5.4); RAI s2.2.
+
+==========================================================================
+[10] CIPHER(): THE STRUCTURE OF A ROUND
+==========================================================================
+GOAL  Connect the picture with the four steps.
+SAY   Look at the machine: the top layer has 16 S-boxes, one per state byte
+      (Byte Sub). Below it, wires cross: that is Shift Row, a fixed
+      permutation moving bytes between columns. Then four "bars" combine the
+      four bytes of each column (Mix Column), and at the bottom the round
+      key is XORed in (the circles, Add Round Key).
+      Round 0 is AddRoundKey alone. Rounds 1 to Nr-1 are the full round
+      SubBytes -> ShiftRows -> MixColumns -> AddRoundKey. The final round Nr
+      omits MixColumns. So AddRoundKey is called Nr+1 times.
+INTUITION (confusion and diffusion)
+      SubBytes: confusion (non-linear, per byte). ShiftRows + MixColumns:
+      diffusion; after two rounds every output byte depends on all 16 input
+      bytes [OUTSIDE SOURCE: Daemen-Rijmen, ref [5], "wide trail" design].
+      AddRoundKey: the only place the key enters.
+WHY NO MixColumns IN THE LAST ROUND  It would add no security (it is a
+      linear map followed by a key addition, so an attacker can undo it) and
+      it makes encryption and decryption structurally symmetric
+      [OUTSIDE SOURCE: Daemen-Rijmen, ref [5]].
+SOURCE FIPS s5.1; figure AES_FRONT.png (labels Byte Sub / Shift Row /
+      Mix Column / Add Round Key).
+
+==========================================================================
+[11] CIPHER(): PSEUDOCODE AND C
+==========================================================================
+SAY   Left is Algorithm 1 of FIPS 197; right is our C. They match line by
+      line: copy input to state; AddRoundKey with the first four words;
+      loop Nr-1 times over the four steps; final round without MixColumns;
+      return. In C the loop counter is `round`, and AddRoundKey takes the
+      round index and finds the right 16 bytes inside ExpandedKey. The
+      constant NR is 10, and the last call uses round key 10.
+KEY FACTS
+      - The loop runs round = 1..Nr-1 = 9 times for AES-128.
+      - The function operates in place on a 16-byte block; the modes call it
+        on in_block/IV buffers.
+SOURCE FIPS Alg. 1; utils.c Cipher().
+
+==========================================================================
+[12] SUBBYTES
+==========================================================================
+SAY   SubBytes applies the S-box independently to each of the 16 bytes:
+      s'_{r,c} = SBox(s_{r,c}). The figure shows one byte s_{r,c} going
+      through the S-box into s'_{r,c}; all others are treated the same.
+      The table is indexed by the byte value itself: high nibble selects the
+      row, low nibble the column. Example: {53} -> row 5, column 3 -> {ed}.
+      In C: sbox[256] and a SubBytes with the loop manually unrolled (16
+      lines). RAI explains why: it removes loop-control overhead, accesses
+      memory sequentially (spatial locality, easier prefetch). "From now on
+      we use unrolling wherever beneficial."
+NOTE  On the slide the table is abbreviated (first 12 of 256 entries and
+      five of the 16 assignments), marked with "..." in the listing.
+SOURCE FIPS s5.1.1 (Fig. 2, Table 4); RAI s3.1; utils.c.
+
+==========================================================================
+[13] SHIFTROWS
+==========================================================================
+SAY   Row r is rotated LEFT by r positions: s'_{r,c} = s_{r,(c+r) mod 4}.
+      Row 0 stays, row 1 moves by one, row 2 by two, row 3 by three. The
+      arrows in the picture show the circular shift of each row.
+      Why: without it each column would be processed independently by
+      MixColumns and the cipher would be four small independent ciphers.
+      After ShiftRows the four bytes of one column come from four different
+      columns, so MixColumns spreads them further.
+      Flat-index view in C (state[r+4c]): row 1 is the 4-cycle on indices
+      1,5,9,13 (state[1] <- state[5] <- state[9] <- state[13] <- old
+      state[1]); row 2 swaps (2,10) and (6,14); row 3 shifts by three, i.e.
+      right by one, so it is the cycle 15->11->7->3->15 written in the code.
+CHECK  s'_{1,0} = s_{1,1}: state[1] = state[5]. Yes, matches line 1.
+SOURCE FIPS s5.1.2 (Eq. 5.5, Fig. 3); utils.c ShiftRows().
+
+==========================================================================
+[14] MIXCOLUMNS: SPECIFICATION
+==========================================================================
+SAY   Each column is treated as a vector of 4 field elements and multiplied
+      by a fixed 4x4 circulant matrix with entries {01},{02},{03}. The
+      four output equations are on the slide; for instance
+         s'_{0,c} = {02}.s_{0,c} (+) {03}.s_{1,c} (+) s_{2,c} (+) s_{3,c}.
+      The multiplication is in GF(2^8). Each row is the previous one shifted
+      right by one position (circulant). The small coefficients make it
+      cheap on 8-bit processors. Together with ShiftRows it gives diffusion:
+      a change in one input byte changes all four bytes of its column, and
+      after ShiftRows and another MixColumns, all 16.
+WORKED EXAMPLE (checked by computer; also in FIPS-style test vectors)
+      Column (db, 13, 53, 45) -> (8e, 4d, a1, bc).
+      s'_0 = {02}.{db} + {03}.{13} + {53} + {45}
+         {02}.{db} = xtime(db) = (0x1b6 ^ 0x11b) = {ad}
+         {03}.{13} = {26} ^ {13} = {35}
+         {ad} ^ {35} ^ {53} ^ {45} = {8e}.
+SOURCE FIPS s4.3, s5.1.3 (Eq. 5.6-5.8, Fig. 4). Worked example: my
+      computation with the FIPS definitions (no external source).
+
+==========================================================================
+[15] MIXCOLUMNS: EFFICIENT EVALUATION WITH XTIME
+==========================================================================
+SAY   Let t = a0+a1+a2+a3 for a column. Then each output is
+         a_i' = a_i (+) xtime(a_i (+) a_{i+1}) (+) t     (indices mod 4)
+      Proof for i = 0 (on the slide): use {03}.a = {02}.a (+) a:
+         a0 + xtime(a0+a1) + t
+           = a0 + 2a0 + 2a1 + a0 + a1 + a2 + a3     (the two a0 cancel)
+           = 2a0 + 3a1 + a2 + a3  = row 0 of the matrix.
+      Cost per column: one 4-way XOR for t, four xtimes, eight XORs, and no
+      table. In C, `temp` stores the OLD a0, because a0 is overwritten
+      before the last line needs it (a3' uses a3 + a0).
+      The listing shows column 0 in full and column 3, "..." means columns
+      1 and 2 are identical with offsets 4 and 8.
+WORKED EXAMPLE  Column (db,13,53,45): t = db^13^53^45 = de.
+      a0' = db ^ xtime(db ^ 13) ^ de. db^13 = c8; xtime(c8) = 0x190 ^ 0x11b
+      = 8b; db ^ 8b = 50; 50 ^ de = 8e. Same as the matrix computation
+      (and the program output): (8e, 4d, a1, bc).
+NOTE  AES.pdf Section 3.3 has a typo in its derivation (see list of
+      findings at the top: it writes D where it should write C). The final
+      listing there is right.
+SOURCE FIPS s5.1.3; RAI s3.3; utils.c MixColumns().
+
+==========================================================================
+[16] ADDROUNDKEY
+==========================================================================
+SAY   Round key `round` is four words w[4*round .. 4*round+3], one word per
+      column. AddRoundKey XORs word w[4*round + c] into column c. The figure
+      shows column s_{*,c} XORed with word w_{l+c}, giving s'_{*,c}, where
+      l = 4*round. It is called Nr+1 times. It is its own inverse because
+      (s XOR k) XOR k = s, so decryption reuses it.
+      Implementation: because the state and the round key are both 16
+      contiguous bytes, one 128-bit SSE2 instruction (_mm_xor_si128) does the
+      whole job (SIMD: single instruction, multiple data). Round key number
+      `round` starts at byte 16*round of ExpandedKey.
+KEY FACTS
+      - The key enters the cipher only through this step.
+      - AddRoundKey with key {00..00} would do nothing; the security of the
+        cipher comes from the key schedule plus the other steps.
+SOURCE FIPS s5.1.4 (Eq. 5.9, Fig. 5); RAI s3.4; utils.c.
+
+==========================================================================
+[17] KEYEXPANSION: ALGORITHM
+==========================================================================
+SAY   KeyExpansion produces 4(Nr+1) words. The first Nk words are the key
+      itself. Every later word is w[i] = w[i-Nk] (+) temp, where temp is
+      w[i-1] normally. When i is a multiple of Nk, temp is first transformed:
+      RotWord rotates the word [a0,a1,a2,a3] to [a1,a2,a3,a0]; SubWord applies
+      the S-box to each byte; then XOR the round constant Rcon[i/Nk]. For
+      AES-256 there is an extra SubWord when i mod Nk = 4 (lines 6-7), which
+      does not apply to AES-128 where Nk = 4.
+      Rcon[j] = [x^{j-1}, 00, 00, 00], so the left byte is {01},{02},{04},
+      {08},{10},{20},{40},{80},{1b},{36}, each the xtime of the previous.
+      In the C code Rcon[10] stores just that left byte.
+      For AES-128 this simplifies, at the bottom of the slide, to
+         w[l+4] = w[l] + SubWord(RotWord(w[l+3])) + Rcon[(l+4)/4]
+         w[l+k] = w[l+k-4] + w[l+k-1],  k = 5,6,7.
+WORKED EXAMPLE  (FIPS App. A key 2b7e151628aed2a6abf7158809cf4f3c)
+      w3 = 09cf4f3c. RotWord -> cf4f3c09. SubWord -> 8a84eb01.
+      XOR Rcon[1]=01000000 -> 8b84eb01. XOR w0=2b7e1516 -> w4 = a0fafe17.
+      Our KeyExpansion prints w4=a0fafe17, w5=88542cb1, w6=23a33939,
+      w7=2a6c7605, ..., w43=b6630ca6 (computed with your code).
+SOURCE FIPS s5.2 (Alg. 2, Table 5); RAI s3.5.
+
+==========================================================================
+[18] KEYEXPANSION: AES-128 DATA FLOW AND C
+==========================================================================
+SAY   The figure is FIPS Fig. 6 for one group of four words (l = 0,4,...,36).
+      Top row: the old words w_l..w_{l+3}. The last word goes through
+      RotWord, SubWord and XOR with Rcon, and into the first XOR with w_l to
+      give w_{l+4}. Then each following new word is the XOR of the word four
+      earlier and the PREVIOUS NEW word: a chain of XORs from left to right.
+      In C: copy the 16 key bytes; loop i from NK to 4(NR+1)-1; copy the
+      previous word into temp; when i%NK==0 do the three operations in one
+      go: since RotWord moves temp[0] to the end, the code writes
+         temp[0] = sbox[temp[1]] ^ Rcon[i/NK - 1]    (SubWord of byte 1, + Rcon)
+         temp[1] = sbox[temp[2]]; temp[2] = sbox[temp[3]]; temp[3] = sbox[t]
+      with t the saved old temp[0]. Finally XOR with the word Nk earlier.
+      RAI: KeyExpansion runs once per key, so it is not optimised.
+NOTE  The index (i/NK)-1 appears because C arrays start at 0 while FIPS
+      numbers Rcon from 1.
+SOURCE FIPS s5.2, Fig. 6; RAI s3.5; utils.c.
+
+==========================================================================
+[19] INVCIPHER()
+==========================================================================
+SAY   Decryption undoes the encryption steps in reverse order. Start with the
+      last round key: AddRoundKey with w[4Nr..4Nr+3]. For round Nr-1 down to
+      1: InvShiftRows, InvSubBytes, AddRoundKey with that round's key, then
+      InvMixColumns. Finally InvShiftRows, InvSubBytes, AddRoundKey with
+      w[0..3]. The round keys are used in reverse order but the key schedule
+      is the same as for encryption.
+      Note the order of AddRoundKey and InvMixColumns in the loop: inside the
+      forward round, MixColumns came BEFORE AddRoundKey, so inverting goes
+      AddRoundKey first, then InvMixColumns.
+      This is the function the ECB and CBC decryption routines call.
+SOURCE FIPS s5.3 (Alg. 3); RAI s4 ("straightforward decryption");
+      utils.c InvCipher().
+
+==========================================================================
+[20] INVSHIFTROWS
+==========================================================================
+SAY   The inverse of "rotate row r left by r" is "rotate row r right by r":
+      s'_{r,c} = s_{r,(c-r) mod 4}. Check: ShiftRows moved the byte in column
+      c to column c-r; InvShiftRows moves it from c-r back to c, because
+      (c - r) + r = c mod 4. Row 2 is its own inverse (shift by 2 equals
+      shift by -2 modulo 4). The C code is the mirror image of ShiftRows.
+SOURCE FIPS s5.3.1 (Eq. 5.12, Fig. 9); utils.c InvShiftRows().
+
+==========================================================================
+[21] INVSUBBYTES
+==========================================================================
+SAY   InvSBox is the S-box read backwards: if SBox({53}) = {ed} then
+      InvSBox({ed}) = {53}. Formally InvSBox = g o f^{-1}: undo the affine map
+      and then invert in the field (g is its own inverse). The code uses a
+      second 256-byte table InvSbox and the same unrolled loop.
+SOURCE FIPS s5.3.2 (Table 6); RAI s2.2; utils.c.
+
+==========================================================================
+[22] INVMIXCOLUMNS: BARRETO'S FACTORISATION
+==========================================================================
+SAY   The inverse of the MixColumns matrix has the larger coefficients
+      {0e},{0b},{0d},{09}, and multiplying by those directly takes many
+      xtimes. P. Barreto observed that
+         InvMix = Mix x P,   P = circulant({05},{00},{04},{00}).
+      Equivalently, as polynomials, d(x) = ({04}x^2 + {05}) (x) c(x)
+      mod (x^4 + 1). So InvMixColumns = a cheap pre-processing step P
+      followed by the existing MixColumns. P needs only
+         u = xtime^2(a0 + a2), v = xtime^2(a1 + a3);
+         a0 += u, a1 += v, a2 += u, a3 += v.
+      Check: u = 4a0 + 4a2, so a0 + u = {05}a0 + {04}a2, the first row of P.
+      The C code does this for each column and then calls MixColumns(s).
+      The price is a small slowdown compared with look-up tables, but no
+      extra tables are needed.
+VERIFIED  I multiplied Mix x P over GF(2^8) by computer and obtained exactly
+      the InvMixColumns matrix of FIPS Eq. 5.14.
+NOTATION  The (x) on the slide is multiplication of polynomials with
+      GF(2^8) coefficients, modulo x^4 + {01}.
+SOURCE RAI s4 Eq. (1) (attributed to P. Barreto, the paper gives no
+      reference for it; the Rijndael design document, ref [5], is the
+      standard citation); FIPS s5.3.3; utils.c InvMixColumns().
+
+==========================================================================
+[23] EQINVCIPHER AND KEYEXPANSIONEIC
+==========================================================================
+SAY   InvCipher has a different operation ORDER from Cipher. The equivalent
+      inverse cipher has the same structure as Cipher: SubBytes-like,
+      ShiftRows-like, MixColumns-like, AddRoundKey, with each step replaced by
+      its inverse. This is possible because
+         (1) InvSubBytes and InvShiftRows commute (one acts per byte, the
+             other only moves bytes), and
+         (2) InvMixColumns is linear over GF(2^8):
+             InvMix(s (+) k) = InvMix(s) (+) InvMix(k).
+      So InvMixColumns can be moved across AddRoundKey if we apply
+      InvMixColumns to the round key too. That is KeyExpansionEIC: expand the
+      key as usual, then for rounds 1..Nr-1 replace the round key by
+      InvMixColumns(round key). The first and last round keys stay the same.
+      Why bother: table-lookup implementations can reuse the same code
+      structure for encryption and decryption.
+      Our modes call InvCipher, since for 8-bit style code the equivalent
+      form brings no benefit (RAI s4). EqInvCipher and KeyExpansionEIC are
+      in utils.c and I verified that they invert Cipher (FIPS test vector).
+SOURCE FIPS s5.3.5 (Alg. 4, 5); RAI s4; utils.c.
+
+==========================================================================
+[24] FROM ROUND TO T-TABLES (1/2)
+==========================================================================
+GOAL  Show how a whole round on one column collapses into 4 table look-ups.
+SAY   Let a be the input of a round, b after SubBytes, c after ShiftRows, d
+      after MixColumns. Then b_{i,j} = SBox[a_{i,j}]; c_{i,j} = b_{i,j+C_i}
+      (C_i is the shift offset of row i; indices mod Nb); and d = M c with M
+      the MixColumns matrix. Substitute: d_j is a linear combination of the
+      four COLUMNS of M, each scaled by an S-box output:
+         d_j = [2,1,1,3]^T . S[a_{0,j+C0}] (+) [3,2,1,1]^T . S[a_{1,j+C1}]
+               (+) [1,3,2,1]^T . S[a_{2,j+C2}] (+) [1,1,3,2]^T . S[a_{3,j+C3}]
+      Each term depends on ONE input byte, so it can be pre-computed for all
+      256 values.
+SOURCE RAI s5.1 (Eq. 1-5). The column vectors are the columns of the
+      MixColumns matrix (FIPS Eq. 5.7); RAI's text extraction is garbled
+      at this point, so I derived the columns from the matrix.
+
+==========================================================================
+[25] FROM ROUND TO T-TABLES (2/2)
+==========================================================================
+SAY   Define T0..T3, each with 256 entries of four bytes (so 1 kB each,
+      4 kB in total). T0[a] = [2.S[a], S[a], S[a], 3.S[a]]^T and T1,T2,T3 are
+      the same word rotated down by one, two and three bytes. Then one round on
+      column j, including AddRoundKey, is
+         T0[a_{0,j+C0}] (+) T1[a_{1,j+C1}] (+) T2[a_{2,j+C2}]
+            (+) T3[a_{3,j+C3}] (+) w[4*round + j].
+      That is four look-ups and four XORs per column per round on 32-bit (or
+      larger) machines, which is why LUT implementations are fast: RAI
+      reports about 400 MB/s versus 34 MB/s for our compact version (from the
+      performance section you chose to skip; omit if not asked).
+      Two caveats: (a) the last round has no MixColumns, so it needs plain
+      S-box look-ups; (b) the table index depends on secret data, so cache
+      hit/miss timing can leak the key (Osvik-Shamir-Tromer; Bernstein).
+      That is why AES-NI and constant-time/bitsliced code exist.
+      AESFINAL does NOT use T-tables; it keeps SubBytes/MixColumns separate.
+CHECK  T_k being a byte rotation of T0 follows from the circulant structure of
+      the matrix (my observation; FIPS/RAI list the four tables).
+SOURCE RAI s5.1; ref [8] Osvik-Shamir-Tromer.
+
+==========================================================================
+[26] MODES OF OPERATION: IV AND PADDING
+==========================================================================
+GOAL  Move from one block to whole files.
+SAY   A block cipher processes 128 bits. A mode of operation says how to use
+      it on a message of many blocks. NIST SP 800-38A defines the standard
+      modes. Three ingredients:
+      (1) IV (initialisation vector): a block-size value that randomises the
+          start. In our code generate_iv() fills IV with OpenSSL RAND_bytes
+          and the program writes it as the first 16 bytes of the output file.
+      (2) Padding for ECB and CBC: PKCS#7. If the last block has l bytes
+          (0 <= l < 16) append p = 16 - l bytes, each of value p. So p is in
+          1..16, and a full block of padding is appended when l = 0. This
+          makes unpadding unambiguous: read the last byte p, check the last
+          p bytes all equal p, remove them. pkcs7_unpad does exactly that.
+      (3) Stream-like modes (OFB, CTR; CFB too) need no padding.
+      I cover ECB, CBC, OFB and CTR; CFB is implemented in the code but not
+      presented.
+SOURCE RAI s6 (intro); RFC 2315 (PKCS#7), ref [7]; moops.c.
+LIKELY Q  "Is PKCS#7 padding safe?" -> Padding-oracle attacks exist when an
+      application reveals whether padding was valid [OUTSIDE SOURCE:
+      Vaudenay 2002]. Our pkcs7_unpad exits with an error message, which
+      would be an oracle in a networked setting. Fine for a file tool.
+
+==========================================================================
+[27] ECB
+==========================================================================
+SAY   ECB encrypts every block separately with the same key:
+      c_i = E_K(m_i), m_i = D_K(c_i). Identical plaintext blocks give
+      identical ciphertext blocks, so patterns of a low-entropy plaintext
+      leak: RAI says that if a block is all zeros or all ones, ECB is
+      "essentially useless". It is virtually never used in practice.
+      Code, left: ecb_encrypt reads full 16-byte blocks, calls Cipher and
+      writes; at the end bytes_read is the length of the last (possibly
+      empty) block, padding_value = 16 - bytes_read, fill, encrypt, write.
+      Right: ecb_decrypt calls InvCipher on every block; the last decrypted
+      block (still in in_block after the loop) is passed to pkcs7_unpad to
+      learn pad_len, then the output file is truncated by pad_len bytes
+      with fseek/ftell/ftruncate.
+SOURCE RAI s6.1; moops.c.
+LIKELY Q  "Famous picture?" -> The "ECB penguin": encrypting a bitmap in ECB
+      keeps the outline visible [OUTSIDE SOURCE, widely known illustration].
+
+==========================================================================
+[28] CBC
+==========================================================================
+SAY   CBC chains blocks: each plaintext block is XORed with the previous
+      ciphertext block before encryption. c_0 = E_K(m_0 (+) IV),
+      c_i = E_K(m_i (+) c_{i-1}). Decryption: m_0 = D_K(c_0) (+) IV,
+      m_i = D_K(c_i) (+) c_{i-1}. With a random IV this is CPA-secure; for
+      chosen-ciphertext security you need authenticated encryption.
+      Parallelism: encryption is sequential (needs c_{i-1}); decryption
+      needs only c_i and c_{i-1}, so it can be parallel.
+      Code: the global IV array serves as the chaining register. In
+      encryption: XOR the plaintext into IV, Cipher(IV) in place - now IV
+      holds c_i - and write it. In decryption: save the ciphertext block in
+      temp, InvCipher the block, XOR with IV (= c_{i-1}), then copy temp
+      into IV for the next block.
+SOURCE RAI s6.2; moops.c.
+
+==========================================================================
+[29] OFB
+==========================================================================
+SAY   OFB turns the block cipher into a synchronous stream cipher: the
+      keystream is z_0 = IV, z_i = E_K(z_{i-1}), and c_i = z_i (+) m_i.
+      Decryption is the same operation. Only the forward function E_K is
+      needed, even to decrypt. No padding is needed; the last partial block
+      just uses a prefix of the keystream (the code writes bytes_read bytes).
+      The keystream does not depend on the data, so it can be pre-computed, but
+      it is generated sequentially. OFB is not secure against chosen-
+      ciphertext attacks (Rogaway), and (K, IV) must never repeat: if two
+      messages use the same keystream, XORing the ciphertexts gives
+      m (+) m' [OUTSIDE SOURCE: standard stream-cipher property].
+      Code: one function for both directions; `choice` is 'e' or 'd'; in
+      encryption the IV is written, in decryption it is read from the file;
+      then loop: Cipher(IV) updates the keystream block in place,
+      xor(in_block, IV) combines, fwrite bytes_read bytes.
+NOTE  generate_iv() is also called in decryption but its result is
+      overwritten by fread, so it is harmless (wasted randomness).
+SOURCE RAI s6.4; moops.c.
+
+==========================================================================
+[30] CTR
+==========================================================================
+SAY   Counter mode builds the keystream from a counter:
+      T_i = (ctr + i - 1) mod 2^l with l = 128, c_i = E_K(T_i) (+) m_i.
+      Decryption is the same. Blocks do not depend on each other, so
+      encryption AND decryption are parallel, keystream can be pre-
+      computed, and any block can be decrypted without the others (random
+      access). RAI concludes CTR is the best choice among the modes
+      (efficient in software and hardware, parallelisable, local error
+      effect). Following C. Paar, ctr is a non-repeating ~96-bit value
+      (nonce) plus a 32-bit block counter that starts at zero. Naively
+      adding or XORing nonce and counter can break security.
+      Code: the 16-byte IV is the nonce (written/read as the first 16 bytes
+      of the file); the line IV[0]=...=IV[3]=0 clears the 32 counter bytes;
+      for each block: copy IV into `input`, Cipher(input) = E_K(T_i), XOR
+      into the data block, write bytes_read bytes; then increment the
+      counter bytes IV[0..3] (a little-endian increment with carry).
+      The slide shows the corrected line xor(in_block, input); see the
+      "IMPORTANT" list at the top: the original has the operands swapped.
+      Never reuse (K, nonce) in CTR: same keystream twice.
+SOURCE RAI s6.5; moops.c (with the one-line fix).
+
+==========================================================================
+[31] MODES: COMPARISON
+==========================================================================
+SAY   Summary table. ECB and CBC use E_K for encryption and D_K for
+      decryption and need padding. OFB and CTR use only E_K, need no padding.
+      Parallelism: ECB both ways, CBC only decryption, OFB neither (the
+      keystream is a chain), CTR both. Keystream can be pre-computed for OFB
+      and CTR. None of these modes provides integrity: use authenticated
+      encryption (e.g., AES-GCM, an authenticated mode built on CTR) when an
+      attacker can modify data [OUTSIDE SOURCE for GCM: NIST SP 800-38D].
+      RAI mentions that for CBC protection against CCA requires
+      authenticated encryption, and Rogaway [9] for OFB.
+SOURCE RAI s6; NIST SP 800-38A.
+
+==========================================================================
+[32] OUR IMPLEMENTATION: DRIVER AND USAGE
+==========================================================================
+SAY   Three files: AES.c is the command-line driver, utils.c/h hold the
+      primitives (S-box, round steps, key expansion, Cipher, InvCipher),
+      moops.c/h hold the modes (plus IV and padding helpers).
+      Build: compile utils.c and moops.c to object files, then link AES.c
+      with them and -lcrypto (OpenSSL provides RAND_bytes for the IV).
+      Run: ./AES e 1 test.pdf out.pdf YELLOW_SUBMARINE, i.e.
+      <op> <mode> <infile> <outfile> <key>, op e/d, mode 1 ECB, 2 CBC,
+      3 CFB, 4 OFB, 5 CTR; the key is 16 characters.
+      main() checks argc == 6, copies the 16 key characters, runs
+      KeyExpansion once, opens the files, and dispatches with nested
+      switches. mode characters other than 1-4 fall into `default`, i.e. CTR.
+NOTE  The key is taken as raw characters (not hex), so a 16-character
+      passphrase is the AES-128 key directly: there is no KDF. Fine for a
+      course project; for real use derive keys with a KDF.
+      If argv[5] has fewer than 16 characters the loop reads past the end
+      of the string (undefined behaviour).
+SOURCE AES.c, readme.txt.
+
+==========================================================================
+[33] REFERENCES
+==========================================================================
+  [1] NIST FIPS 197-upd1 (AES_Docs.pdf)       [2] Rijndael AES Implementation
+  [3] Wikipedia: Advanced Encryption Standard
+  [4] Wikipedia: Advanced Encryption Standard process
+  [5] Daemen, Rijmen: The Design of Rijndael (Springer)
+  [6] NIST SP 800-38A                          [7] RFC 2315 (PKCS#7)
+  [8] Osvik, Shamir, Tromer, J. Cryptology 2010 [9] Rogaway 2011
+  [10] Gueron / Intel AES-NI white paper 2010
+  [11] Nechvatal et al., Report on the Development of the AES, 2001
+Not on the slides but referenced in these notes [OUTSIDE SOURCE]:
+  Vaudenay, "Security Flaws Induced by CBC Padding", EUROCRYPT 2002;
+  NIST SP 800-38D (GCM).
+NOTE  Wikipedia is cited for dates and attack results; for exact numbers
+      cross-check with the primary sources (Bogdanov et al. 2011, Tao-Wu 2015).
+
+==========================================================================
+THANK YOU SLIDE
+==========================================================================
+The right side shows a black-and-white QR code and the link to the GitHub
+repository https://github.com/0r-gh0/AES-Presentation (slides, LaTeX source,
+C code). The summary slide was removed, so close by recapping verbally:
+128-bit block / 10 rounds, the four round steps, key schedule, decryption
+as inverse in reverse order, and the four modes with their trade-offs.
+Invite questions. Likely ones, with short answers:
+  Q  Is AES broken?   No. Best attacks (biclique) are ~4x faster than brute
+     force on the full cipher; side channels are the practical risk.
+  Q  Why is xtime constant time?   Branch-free mask b>>7 times 0x1B.
+  Q  Why is the S-box a table?   Speed; it is computed from inversion + affine.
+  Q  AES-128 vs 256?   Same structure; 256 has 14 rounds and a longer key
+     schedule (extra SubWord step). The code does AES-128 only.
+  Q  Which mode should I use?   An authenticated mode (e.g., GCM); of the
+     four on the slides, CTR (or CBC with a MAC).
+  Q  Why does decryption in CBC parallelise but encryption not?
+     Decryption needs only ciphertext blocks, which are all known.
+
+SUGGESTED TIMING FOR A 30-35 MINUTE TALK
+  Intro + history (slides 02-05): 4 min
+  Preliminaries (06-09): 5 min
+  Encryption (10-18): 9 min
+  Decryption (19-23): 5 min
+  T-tables (24-25): 2 min
+  Modes (26-31): 6 min
+  Implementation (32): 2 min
