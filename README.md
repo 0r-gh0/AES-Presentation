@@ -2,7 +2,7 @@
 
 Black-and-white "terminal" Beamer deck on the Advanced Encryption Standard, with the C code beside each algorithm.
 
-- `main.tex`, `beamerthemeterminal.sty`: slides (compile with **XeLaTeX or LuaLaTeX**, twice; on Overleaf set the compiler under Menu > Settings)
+- `main.tex`, `beamerthemeterminal.sty`, `latexmkrc`: slides. The `latexmkrc` makes Overleaf compile with LuaLaTeX automatically; otherwise set Menu > Settings > Compiler to LuaLaTeX or XeLaTeX (pdfLaTeX fails)
 - `main.pdf`: compiled deck
 - `code/`: C implementation shown on the slides (`AES.c`, `utils.c`, `moops.c`). Note: `moops.c` here has the one-line CTR fix `xor(in_block, input)`
 - `STUDY_MATERIAL.txt`: per-slide speaker notes
