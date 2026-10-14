@@ -65,8 +65,8 @@
   {\setbeamercolor{background canvas}{bg=black}
    \begin{frame}[plain,noframenumbering]
      \begin{tikzpicture}[remember picture,overlay]
-       \node[anchor=north east,inner sep=0pt] at (current page.north east)
-         {\includegraphics[height=\paperheight]{images/AES_BG.png}};
+       \node[anchor=east,inner sep=0pt] at ([xshift=-10mm]current page.east)
+         {\includegraphics[height=0.66\paperheight]{images/AES_BG.png}};
      \end{tikzpicture}
      \vfill
      \color{white}
@@ -81,16 +81,15 @@
 % ============================================================
 %  TITLE
 % ============================================================
-{\setbeamercolor{background canvas}{bg=black}
 \begin{frame}[plain,noframenumbering]
 \begin{columns}[c]
 \begin{column}{0.60\textwidth}
-\begin{tcolorbox}[enhanced, sharp corners, colback=white, colframe=white, boxrule=1pt,
-  shadow={3pt}{-3pt}{0pt}{fill=white!45!black}, left=12pt, right=12pt, top=10pt, bottom=10pt,
+\begin{tcolorbox}[enhanced, sharp corners, colback=white, colframe=black, boxrule=1pt,
+  shadow={3pt}{-3pt}{0pt}{fill=black}, left=12pt, right=12pt, top=10pt, bottom=10pt,
   title={\hspace{-4pt}\rule{0.6em}{0.6em}\ \rule{0.6em}{0.6em}\ \rule{0.6em}{0.6em}%
          \hfill AES.c\hfill\phantom{\rule{2.6em}{0.6em}}},
-  coltitle=black, colbacktitle=white, fonttitle=\footnotesize\bfseries,
-  toptitle=2pt, bottomtitle=2pt, before upper=\raggedright, colupper=black]
+  coltitle=white, colbacktitle=black, fonttitle=\footnotesize\bfseries,
+  toptitle=2pt, bottomtitle=2pt, before upper=\raggedright]
 \begin{minipage}[c]{0.62\linewidth}
 {\Large\bfseries ADVANCED\\ENCRYPTION\\STANDARD\par}
 \vskip4pt{\large\bfseries (RIJNDAEL)\par}
@@ -105,17 +104,14 @@
 \end{tcolorbox}
 \end{column}
 \begin{column}{0.36\textwidth}
-\begin{tcolorbox}[enhanced, sharp corners, colback=white, colframe=white, boxrule=0.8pt,
-  coltitle=black, colbacktitle=white, fonttitle=\bfseries\small, title={AES round},
-  left=5pt, right=5pt, top=4pt, bottom=4pt, boxsep=0pt, toptitle=1pt, bottomtitle=1pt,
-  shadow={2.2pt}{-2.2pt}{0pt}{fill=white!45!black}, halign=center, colupper=black]
+\begin{tbox}[halign=center]{AES round}
 \includegraphics[height=54mm]{images/AES_FRONT.png}\par\vskip5pt
 {\small\bfseries ARGHA SARDAR}\par\vskip1pt
 {\footnotesize IISc\ \ //\ \ \today}
-\end{tcolorbox}
+\end{tbox}
 \end{column}
 \end{columns}
-\end{frame}}
+\end{frame}
 
 % ============================================================
 \begin{frame}{Agenda}
@@ -1466,22 +1462,19 @@ int main(int argc, char* argv[]) {
 
 {\setbeamercolor{background canvas}{bg=black}
 \begin{frame}[plain,noframenumbering]
+\color{white}
 \begin{columns}[c]
 \begin{column}{0.50\textwidth}
-\color{white}
 {\small > exit 0}\par\vskip10pt
 {\fontsize{34}{40}\selectfont\bfseries Thank you\,\terminalcursor}\par\vskip14pt
 {\small Questions?}
 \end{column}
 \begin{column}{0.46\textwidth}
-\begin{tcolorbox}[enhanced, sharp corners, colback=white, colframe=white, boxrule=0.8pt,
-  coltitle=black, colbacktitle=white, fonttitle=\bfseries\small, title={> git clone},
-  left=5pt, right=5pt, top=4pt, bottom=4pt, boxsep=0pt, toptitle=1pt, bottomtitle=1pt,
-  shadow={2.2pt}{-2.2pt}{0pt}{fill=white!45!black}, halign=center, colupper=black]
+\centering
+{\small\bfseries > git clone}\par\vskip3pt
 \includegraphics[width=0.62\linewidth]{images/qr_repo.png}\par\vskip3pt
-{\scriptsize\urlstyle{tt}\url{https://github.com/0r-gh0/AES-Presentation}}\par
+{\scriptsize\texttt{https://github.com/0r-gh0/AES-Presentation}}\par
 {\tiny slides, LaTeX source and C code}
-\end{tcolorbox}
 \end{column}
 \end{columns}
 \end{frame}}
