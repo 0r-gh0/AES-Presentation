@@ -146,7 +146,7 @@ void MixColumns(u8* s) {
 	// Mix first column
     u8 t = s[0] ^ s[1] ^ s[2] ^ s[3];
     u8 temp = s[0];
-    s[0] ^= xtime(s[0] ^ s[1]) ^ t;
+    s[0] ^= xtime(s[0] ^ s[1]) ^ t; 
     s[1] ^= xtime(s[1] ^ s[2]) ^ t;
     s[2] ^= xtime(s[2] ^ s[3]) ^ t;
     s[3] ^= xtime(s[3] ^ temp) ^ t;

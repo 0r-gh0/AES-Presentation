@@ -219,22 +219,20 @@ AES-256 & 8 & 256 & 4 & 14 \\
 \begin{itemize}\footnotesize
 \item Key schedule: $4(\Nr+1)$ words $w[i]$.
 \item AES-128 needs $4\cdot 11=44$ words $=176$ bytes.
-\item Our implementation: \alert{AES-128 only}.
+\item We will implementation: \alert{AES-128 only}.
 \end{itemize}
 \end{column}
 \begin{column}{0.46\textwidth}
 %CODE utils.h
 \begin{tbox}{utils.h}
 \begin{lstlisting}
-#define NK 4  // Number of 32-bit words
-              // in the key (AES-128: Nk=4)
-#define NR 10 // Number of rounds
-              // (AES-128: Nr=10)
+#define NK 4  // # of words (32-bit) in the key
+#define NR 10 // # of rounds
 typedef unsigned char u8;
 void KeyExpansion(u8* key, u8* w);
 void Cipher(u8* state, u8* ExpandedKey);
 ...
-void InvCipher( u8* state, u8* ExpandedKey);
+void InvCipher(u8* state, u8* ExpandedKey);
 \end{lstlisting}
 \end{tbox}
 \vskip4pt
@@ -298,7 +296,6 @@ void Cipher(u8* state, u8* ExpandedKey);
 $s_{r,c}=\texttt{state}[\,r+4c\,]$.\par\vskip2pt
 Column $c$ is the contiguous slice \texttt{state[4c..4c+3]}, which is why
 \texttt{MixColumns} works on \texttt{s[0..3]}, \texttt{s[4..7]}, \texttt{s[8..11]}, \texttt{s[12..15]}.\par\vskip2pt
-Row $r$ is strided: \texttt{state[r]}, \texttt{state[r+4]}, \texttt{state[r+8]}, \texttt{state[r+12]}.
 \end{pbox}
 \end{column}
 \end{columns}
@@ -340,22 +337,16 @@ For $b\neq\hx{00}$ there is a unique $b^{-1}$ with $b\gm b^{-1}=\hx{01}$:
 \end{frame}
 
 \begin{frame}[fragile]{xtime: multiplication by $\hx{02}$}
-\begin{columns}[T]
-\begin{column}{0.54\textwidth}
+% \begin{columns}[T]
+% \begin{column}{0.54\textwidth}
 \small
 Multiplying by $x$ shifts the polynomial; reduce by $m(x)$ if the degree reaches 8:
 \[ \fn{xtime}(b)=b\gm\hx{02}=
 \begin{cases}\{b_6b_5\dots b_0\,0\} & b_7=0\\
 \{b_6b_5\dots b_0\,0\}\xor\hx{1b} & b_7=1\end{cases}\]
-Any constant is a sum of powers of $\hx{02}$; with $b=\hx{57}$:\\[2pt]
-\footnotesize
-$\hx{57}\gm\hx{02}=\hx{ae},\ \hx{04}\!:\hx{47},\ \hx{08}\!:\hx{8e},\ \hx{10}\!:\hx{07}$\\[2pt]
-$\hx{13}=\hx{10}\xor\hx{02}\xor\hx{01}$, hence\\
-$\hx{57}\gm\hx{13}=\hx{57}\xor\hx{ae}\xor\hx{07}=\hx{fe}$\\[2pt]
-Horner form for $\hx{15}=\hx{01}\xor\hx{04}\xor\hx{10}$:\\
-$b\gm\hx{15}=b\xor\fn{xtime}^2\!\big(b\xor\fn{xtime}^2(b)\big)$
-\end{column}
-\begin{column}{0.44\textwidth}
+Any constant is a sum of powers of $\hx{02}$\\[2pt]
+% \end{column}
+% \begin{column}{0.44\textwidth}
 %CODE utils.c
 \begin{tbox}{utils.c :: xtime (constant time)}
 \begin{lstlisting}
@@ -367,28 +358,19 @@ u8 xtime(u8 b) {
 \end{lstlisting}
 \end{tbox}
 \vskip4pt
-\begin{pbox}\footnotesize
-Branching version, \alert{data-dependent timing}:\\
-\texttt{(b<{}<1) \string^ ((b \& 0x80) ? 0x1B : 0x00)}\\[2pt]
-Masking version: $b_7\in\{0,1\}$ times $\hx{1b}$ gives the same value with
-\alert{no branch}, so the cycle count is independent of $b$.
-\end{pbox}
-\end{column}
-\end{columns}
+% \end{column}
+% \end{columns}
 \src{FIPS 197 \S4.2 (Eq.~4.5--4.7); Rijndael AES Implementation \S2.1; AESFINAL/utils.c}
 \end{frame}
 
-\begin{frame}{The S-box as $f\circ g$: inversion and affine map}
+\begin{frame}{The S-box}
 \begin{columns}[T]
-\begin{column}{0.47\textwidth}
+\begin{column}{0.44\textwidth}
 \small
 \[ \fn{SBox}(b)=f\big(g(b)\big) \]
 \textbf{1. Inversion} in $\GF$:
 \[ g(b)=\tilde b=\begin{cases}\hx{00}& b=\hx{00}\\ b^{-1} & b\neq\hx{00}\end{cases}\]\vskip-4pt
-\textbf{2. Affine map}, $c=\hx{63}$, indices mod 8:
-\[ b'_i=\tilde b_i\xor\tilde b_{i+4}\xor\tilde b_{i+5}\xor\tilde b_{i+6}\xor\tilde b_{i+7}\xor c_i \]
-\end{column}
-\begin{column}{0.50\textwidth}
+\textbf{2. Affine map}:
 \scriptsize
 \[\setlength{\arraycolsep}{2pt}
 \begin{bmatrix}b'_0\\b'_1\\b'_2\\b'_3\\b'_4\\b'_5\\b'_6\\b'_7\end{bmatrix}=
@@ -397,15 +379,60 @@ Masking version: $b_7\in\{0,1\}$ times $\hx{1b}$ gives the same value with
 1&1&1&1&1&0&0&0\\0&1&1&1&1&1&0&0\\0&0&1&1&1&1&1&0\\0&0&0&1&1&1&1&1\end{bmatrix}
 \begin{bmatrix}\tilde b_0\\\tilde b_1\\\tilde b_2\\\tilde b_3\\\tilde b_4\\\tilde b_5\\\tilde b_6\\\tilde b_7\end{bmatrix}\xor
 \begin{bmatrix}1\\1\\0\\0\\0\\1\\1\\0\end{bmatrix}\]
+\vskip-6pt
+\begin{itemize}\scriptsize
+\item $g$ is non-linear; $f$ is a bijection; $\fn{SBox}^{-1}=g\circ f^{-1}$.
+\item $\fn{SBox}(\hx{53})=\hx{ed}$, $\fn{SBox}(\hx{00})=\hx{63}$.
+\end{itemize}
+\end{column}
+\begin{column}{0.54\textwidth}
+\centering
+{\tiny\textbf{SBox}\ (rows $x$, columns $y$)}\par\vskip1pt
+{\ttfamily\fontsize{4.3}{5.0}\selectfont
+\begin{tabular}{@{}c|@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{}}
+ & \textbf{0} & \textbf{1} & \textbf{2} & \textbf{3} & \textbf{4} & \textbf{5} & \textbf{6} & \textbf{7} & \textbf{8} & \textbf{9} & \textbf{a} & \textbf{b} & \textbf{c} & \textbf{d} & \textbf{e} & \textbf{f} \\ \hline
+\textbf{0} & 63 & 7c & 77 & 7b & f2 & 6b & 6f & c5 & 30 & 01 & 67 & 2b & fe & d7 & ab & 76 \\
+\textbf{1} & ca & 82 & c9 & 7d & fa & 59 & 47 & f0 & ad & d4 & a2 & af & 9c & a4 & 72 & c0 \\
+\textbf{2} & b7 & fd & 93 & 26 & 36 & 3f & f7 & cc & 34 & a5 & e5 & f1 & 71 & d8 & 31 & 15 \\
+\textbf{3} & 04 & c7 & 23 & c3 & 18 & 96 & 05 & 9a & 07 & 12 & 80 & e2 & eb & 27 & b2 & 75 \\
+\textbf{4} & 09 & 83 & 2c & 1a & 1b & 6e & 5a & a0 & 52 & 3b & d6 & b3 & 29 & e3 & 2f & 84 \\
+\textbf{5} & 53 & d1 & 00 & ed & 20 & fc & b1 & 5b & 6a & cb & be & 39 & 4a & 4c & 58 & cf \\
+\textbf{6} & d0 & ef & aa & fb & 43 & 4d & 33 & 85 & 45 & f9 & 02 & 7f & 50 & 3c & 9f & a8 \\
+\textbf{7} & 51 & a3 & 40 & 8f & 92 & 9d & 38 & f5 & bc & b6 & da & 21 & 10 & ff & f3 & d2 \\
+\textbf{8} & cd & 0c & 13 & ec & 5f & 97 & 44 & 17 & c4 & a7 & 7e & 3d & 64 & 5d & 19 & 73 \\
+\textbf{9} & 60 & 81 & 4f & dc & 22 & 2a & 90 & 88 & 46 & ee & b8 & 14 & de & 5e & 0b & db \\
+\textbf{a} & e0 & 32 & 3a & 0a & 49 & 06 & 24 & 5c & c2 & d3 & ac & 62 & 91 & 95 & e4 & 79 \\
+\textbf{b} & e7 & c8 & 37 & 6d & 8d & d5 & 4e & a9 & 6c & 56 & f4 & ea & 65 & 7a & ae & 08 \\
+\textbf{c} & ba & 78 & 25 & 2e & 1c & a6 & b4 & c6 & e8 & dd & 74 & 1f & 4b & bd & 8b & 8a \\
+\textbf{d} & 70 & 3e & b5 & 66 & 48 & 03 & f6 & 0e & 61 & 35 & 57 & b9 & 86 & c1 & 1d & 9e \\
+\textbf{e} & e1 & f8 & 98 & 11 & 69 & d9 & 8e & 94 & 9b & 1e & 87 & e9 & ce & 55 & 28 & df \\
+\textbf{f} & 8c & a1 & 89 & 0d & bf & e6 & 42 & 68 & 41 & 99 & 2d & 0f & b0 & 54 & bb & 16 \\
+\end{tabular}\par}
+\vskip3pt
+{\tiny\textbf{InvSBox}}\par\vskip1pt
+{\ttfamily\fontsize{4.3}{5.0}\selectfont
+\begin{tabular}{@{}c|@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{\hspace{3.2pt}}c@{}}
+ & \textbf{0} & \textbf{1} & \textbf{2} & \textbf{3} & \textbf{4} & \textbf{5} & \textbf{6} & \textbf{7} & \textbf{8} & \textbf{9} & \textbf{a} & \textbf{b} & \textbf{c} & \textbf{d} & \textbf{e} & \textbf{f} \\ \hline
+\textbf{0} & 52 & 09 & 6a & d5 & 30 & 36 & a5 & 38 & bf & 40 & a3 & 9e & 81 & f3 & d7 & fb \\
+\textbf{1} & 7c & e3 & 39 & 82 & 9b & 2f & ff & 87 & 34 & 8e & 43 & 44 & c4 & de & e9 & cb \\
+\textbf{2} & 54 & 7b & 94 & 32 & a6 & c2 & 23 & 3d & ee & 4c & 95 & 0b & 42 & fa & c3 & 4e \\
+\textbf{3} & 08 & 2e & a1 & 66 & 28 & d9 & 24 & b2 & 76 & 5b & a2 & 49 & 6d & 8b & d1 & 25 \\
+\textbf{4} & 72 & f8 & f6 & 64 & 86 & 68 & 98 & 16 & d4 & a4 & 5c & cc & 5d & 65 & b6 & 92 \\
+\textbf{5} & 6c & 70 & 48 & 50 & fd & ed & b9 & da & 5e & 15 & 46 & 57 & a7 & 8d & 9d & 84 \\
+\textbf{6} & 90 & d8 & ab & 00 & 8c & bc & d3 & 0a & f7 & e4 & 58 & 05 & b8 & b3 & 45 & 06 \\
+\textbf{7} & d0 & 2c & 1e & 8f & ca & 3f & 0f & 02 & c1 & af & bd & 03 & 01 & 13 & 8a & 6b \\
+\textbf{8} & 3a & 91 & 11 & 41 & 4f & 67 & dc & ea & 97 & f2 & cf & ce & f0 & b4 & e6 & 73 \\
+\textbf{9} & 96 & ac & 74 & 22 & e7 & ad & 35 & 85 & e2 & f9 & 37 & e8 & 1c & 75 & df & 6e \\
+\textbf{a} & 47 & f1 & 1a & 71 & 1d & 29 & c5 & 89 & 6f & b7 & 62 & 0e & aa & 18 & be & 1b \\
+\textbf{b} & fc & 56 & 3e & 4b & c6 & d2 & 79 & 20 & 9a & db & c0 & fe & 78 & cd & 5a & f4 \\
+\textbf{c} & 1f & dd & a8 & 33 & 88 & 07 & c7 & 31 & b1 & 12 & 10 & 59 & 27 & 80 & ec & 5f \\
+\textbf{d} & 60 & 51 & 7f & a9 & 19 & b5 & 4a & 0d & 2d & e5 & 7a & 9f & 93 & c9 & 9c & ef \\
+\textbf{e} & a0 & e0 & 3b & 4d & ae & 2a & f5 & b0 & c8 & eb & bb & 3c & 83 & 53 & 99 & 61 \\
+\textbf{f} & 17 & 2b & 04 & 7e & ba & 77 & d6 & 26 & e1 & 69 & 14 & 63 & 55 & 21 & 0c & 7d \\
+\end{tabular}\par}
 \end{column}
 \end{columns}
-\vskip2pt
-\begin{itemize}\footnotesize
-\item $g$ is non-linear (an involution, $g\circ g=\mathrm{id}$); $f$ is a bijection; so $\fn{SBox}^{-1}=g\circ f^{-1}$.
-\item Examples: $\fn{SBox}(\hx{53})=\hx{ed}$, $\fn{SBox}(\hx{00})=\hx{63}$.
-\item We use a \alert{256-byte look-up table} for speed (Rijndael AES Implementation \S2.2).
-\end{itemize}
-\src{FIPS 197 \S5.1.1 (Eq.~5.2--5.4); Rijndael AES Implementation \S2.2}
+\src{FIPS 197 \S5.1.1 (Eq.~5.2--5.4), Tables 4 and 6; Rijndael AES Implementation \S2.2}
 \end{frame}
 
 % ============================================================
@@ -421,7 +448,7 @@ Masking version: $b_7\in\{0,1\}$ times $\hx{1b}$ gives the same value with
 \small
 Each round applies four byte-oriented transformations to the state:
 \begin{enumerate}\footnotesize
-\item[\inv{1}] $\fn{SubBytes}$: S-box applied to each of the 16 bytes (non-linear).
+\item[\inv{1}] $\fn{SubBytes}$: S-box applied to each of the 16 bytes.
 \item[\inv{2}] $\fn{ShiftRows}$: row $r$ is rotated left by $r$ positions.
 \item[\inv{3}] $\fn{MixColumns}$: each column times a fixed matrix over $\GF$.
 \item[\inv{4}] $\fn{AddRoundKey}$: XOR with a 128-bit round key from $\fn{KeyExpansion}$.
@@ -551,14 +578,14 @@ Row $r$ is cyclically shifted \alert{left} by $r$ bytes (row 0 unchanged):
 \begin{tbox}{utils.c :: ShiftRows}
 \begin{lstlisting}
 void ShiftRows(u8* state) {
-    // Shift second row
+    // Second Row : 1 Left cyclic Shift
     u8 temp = state[1];
     state[1]  = state[5];
     state[5]  = state[9];
     state[9]  = state[13];
     state[13] = temp;
 
-    // Shift third row
+    // Third Row : 2 Left cyclic Shift
     temp = state[2];
     state[2]  = state[10];
     state[10] = temp;
@@ -566,7 +593,7 @@ void ShiftRows(u8* state) {
     state[6]  = state[14];
     state[14] = temp;
 
-    // Shift fourth row
+    // Fourth Row : 3 Left cyclic Shift
     temp = state[15];
     state[15] = state[11];
     state[11] = state[7];
@@ -945,11 +972,11 @@ void InvSubBytes(u8* state) {
 \begin{columns}[T]
 \begin{column}{0.54\textwidth}
 \begin{itemize}
-\item As polynomials: $d(x)=\big(\hx{04}x^2+\hx{05}\big)\otimes c(x)\bmod(x^4+\hx{01})$.
 \item Direct coefficients $\hx{09},\hx{0b},\hx{0d},\hx{0e}$ need many $\fn{xtime}$ calls.
 \item Instead: a cheap \alert{pre-processing} $P$, then the existing $\fn{MixColumns}$:
 \[ u=\fn{xtime}^2(a_0\xor a_2),\quad v=\fn{xtime}^2(a_1\xor a_3) \]
 \[ (a_0,a_1,a_2,a_3)\leftarrow(a_0\xor u,\ a_1\xor v,\ a_2\xor u,\ a_3\xor v) \]
+\[ (a_0,a_1,a_2,a_3)\leftarrow MixColumns(a_0, a_1, a_2,a_3) \]
 \end{itemize}
 \end{column}
 \begin{column}{0.43\textwidth}
@@ -973,6 +1000,7 @@ void InvMixColumns(u8* s) {
 \src{FIPS 197 \S5.3.3 (Eq.~5.13--5.15); Rijndael AES Implementation \S4, Eq.~(1) (P.~Barreto); AESFINAL/utils.c}
 \end{frame}
 
+\begin{comment}
 \begin{frame}[fragile]{EqInvCipher and KeyExpansionEIC}
 \begin{columns}[T]
 \begin{column}{0.50\textwidth}
@@ -1090,24 +1118,24 @@ with a 256-byte S-box.
 \end{columns}
 \src{Rijndael AES Implementation \S5.1; Osvik, Shamir, Tromer, J.\ Cryptology 23 (2010)}
 \end{frame}
-
+\end{comment}
 % ============================================================
-\section{MODES OF OPERATION}
+\section{MODES OF OPERATION \\ IMPLEMENTATION}
 
 \begin{frame}[fragile]{Modes of operation: IV and padding}
 \begin{columns}[T]
 \begin{column}{0.52\textwidth}
 \small
 A message $m=m_0m_1\dots$ is processed in 128-bit blocks; the mode defines how
-$E_K$ is used (NIST SP 800-38A).
+$E_K$ is used.
 \begin{itemize}\footnotesize
-\item \alert{IV}: a block-sized value for CBC, OFB (and CFB); a nonce for CTR.
+\item \alert{IV}: a block-sized value for CBC; a nonce for CTR.
   We draw it with OpenSSL \texttt{RAND\_bytes} and store it as the first 16 bytes of the file.
 \item ECB and CBC need whole blocks: \alert{PKCS\#7 padding}. If the last block has $\ell$ bytes ($0\le\ell<16$), append $p=16-\ell$ bytes each of value $p$ (so $1\le p\le16$; a full block of padding is added when $\ell=0$).
 \item Decryption reads the last byte $p$, checks that the last $p$ bytes equal $p$, and removes them.
 \end{itemize}
 \vskip2pt
-{\footnotesize Modes covered: ECB, CBC, OFB, CTR (CFB is implemented in the code but not presented).}
+{\footnotesize Modes covered: ECB, CBC, CTR (OFB, CFB is implemented in the code but not presented).}
 \end{column}
 \begin{column}{0.45\textwidth}
 \codesmall
@@ -1153,8 +1181,8 @@ u8 pkcs7_unpad(u8* plaintext) {
 \end{column}
 \begin{column}{0.48\textwidth}
 \footnotesize
-\alert{Weakness}: $m_i=m_j\Rightarrow c_i=c_j$. Patterns of a low-entropy plaintext
-space survive encryption; ECB is virtually never used in practice.
+\alert{Weakness}: $m_i=m_j\Rightarrow c_i=c_j$. 
+ECB is not preferred in practice.
 \end{column}
 \end{columns}
 \vskip4pt
@@ -1219,9 +1247,6 @@ $\begin{cases}c_0=E_K(m_0\xor IV)\\ c_i=E_K(m_i\xor c_{i-1}),\ i\ge1\end{cases}$
 $\begin{cases}m_0=D_K(c_0)\xor IV\\ m_i=D_K(c_i)\xor c_{i-1},\ i\ge1\end{cases}$
 \end{column}
 \end{columns}
-\vskip2pt
-\footnotesize
-Random IV $\Rightarrow$ CPA-secure (CCA needs authenticated encryption). Encryption is sequential; decryption is parallelisable ($m_i$ needs only $c_i,c_{i-1}$).
 \vskip3pt
 \codesmall
 \begin{columns}[T]
@@ -1274,6 +1299,7 @@ void cbc_decrypt(FILE* ifile, FILE *ofile, u8* ExpandedKey){
 \src{Rijndael AES Implementation \S6.2; AESFINAL/moops.c. Global \texttt{IV} is the chaining register.}
 \end{frame}
 
+\begin{comment}
 \begin{frame}[fragile]{OFB: output feedback}
 \begin{columns}[T]
 \begin{column}{0.46\textwidth}
@@ -1314,6 +1340,7 @@ void ofb(FILE* ifile, FILE *ofile, u8* ExpandedKey,
 \end{columns}
 \src{Rijndael AES Implementation \S6.4; AESFINAL/moops.c}
 \end{frame}
+\end{comment}
 
 \begin{frame}[fragile]{CTR: counter mode}
 \begin{columns}[T]
@@ -1323,10 +1350,9 @@ Keystream from encrypting successive counter values ($\ell=128$):
 \[ \begin{cases} T_i=(ctr+i-1)\bmod 2^{\ell}\\ c_i=E_K(T_i)\xor m_i,\ i\ge1\end{cases} \]
 Decryption: $m_i=E_K(T_i)\xor c_i$.
 \begin{itemize}\footnotesize
-\item $ctr$ = 96-bit non-repeating nonce $\Vert$ 32-bit block counter, starting at 0.
+\item $ctr$ = 32-bit block counter $\Vert$ 96-bit non-repeating nonce, starting at 0.
 \item Blocks are independent: \alert{parallel} encryption and decryption, pre-processing, random access.
 \item Software and hardware efficient; marked as the best choice among the modes in Rijndael AES Implementation.
-\item Never reuse a $(K,\text{nonce})$ pair.
 \end{itemize}
 \end{column}
 \begin{column}{0.51\textwidth}
@@ -1367,21 +1393,13 @@ mode & uses & padding & IV / nonce & par.\ enc. & par.\ dec. & keystream pre-com
 \midrule
 ECB & $E_K$ / $D_K$ & yes & none & yes & yes & -- \\
 CBC & $E_K$ / $D_K$ & yes & random IV & no & yes & -- \\
-OFB & $E_K$ only & no & unique IV & no & no & yes \\
 CTR & $E_K$ only & no & unique nonce & yes & yes & yes \\
 \bottomrule
 \end{tabular}
 \vskip8pt
 \raggedright
-\begin{itemize}
-\item ECB leaks equality of blocks; CBC/OFB/CTR hide it when the IV is fresh.
-\item None of the confidentiality modes authenticates the data: use authenticated encryption against active attackers.
-\end{itemize}
 \src{Rijndael AES Implementation \S6; NIST SP 800-38A}
 \end{frame}
-
-% ============================================================
-\section{IMPLEMENTATION}
 
 \begin{frame}[fragile]{Our implementation: driver and usage}
 \begin{columns}[T]

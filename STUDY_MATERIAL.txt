@@ -256,9 +256,10 @@ VERIFY  0xae = 10101110: b7=1 -> (0xae<<1)=0x15c, low byte 0x5c, XOR 0x1b
 SOURCE FIPS s4.2 (Eq. 4.5-4.7); RAI s2.1; utils.c xtime().
 
 ==========================================================================
-[09] THE S-BOX AS f o g
+[09] THE S-BOX (inversion + affine map; SBox and InvSBox tables on the right)
 ==========================================================================
-GOAL  Explain what the 256-byte table encodes.
+GOAL  Explain what the 256-byte tables encode. Left: g and the affine matrix.
+      Right: the SBox table (top) and the InvSBox table (bottom), x = row, y = column.
 SAY   SBox(b) = f(g(b)). Step 1, g: replace b by its multiplicative inverse
       in GF(2^8), mapping {00} to {00}. This is the non-linear part. Step 2,
       f: an affine map over bits: b'_i = b~_i + b~_{i+4} + b~_{i+5} + b~_{i+6}
