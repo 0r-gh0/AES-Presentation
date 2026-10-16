@@ -678,6 +678,12 @@ SOURCE RAI s6.5; moops.c (with the one-line fix).
 ==========================================================================
 [31] MODES: COMPARISON
 ==========================================================================
+LAYOUT  2x2 grid: ECB diagram (top-left), CBC diagram (top-right), CTR diagram
+      (bottom-left), comparison table (bottom-right; ECB, CBC, CTR rows).
+NOTE  The CTR diagram's lower half shows "Decrypt" boxes. In CTR decryption
+      also uses the FORWARD function E_K (ctr() calls Cipher() in both
+      directions), so say "this box is E_K again". The CBC/CTR images also
+      spell "Encyrption/Decyrption" in their headings.
 SAY   Summary table. ECB and CBC use E_K for encryption and D_K for
       decryption and need padding. OFB and CTR use only E_K, need no padding.
       Parallelism: ECB both ways, CBC only decryption, OFB neither (the

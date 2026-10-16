@@ -135,34 +135,6 @@ transformed values are primed ($s'$), $\xor$ is XOR, $\gm$ is multiplication in 
 % ============================================================
 \section{INTRODUCTION}
 
-\begin{frame}{Block ciphers}
-\begin{columns}[T]
-\begin{column}{0.55\textwidth}
-\begin{itemize}
-\item A \alert{block} is a bit sequence of fixed length $n$.
-\item A \alert{block cipher} is a map
-  \[ E:\ \mathcal{K}\times\{0,1\}^{n}\to\{0,1\}^{n}, \]
-  such that for every $K\in\mathcal{K}$ the function $E_K(\cdot)\triangleq E(K,\cdot)$
-  is a \alert{bijection} of $\{0,1\}^{n}$.
-\item Decryption is the inverse permutation: $D_K=E_K^{-1}$.
-\item A block cipher is a fundamental primitive and the basis of services
-  that provide \alert{confidentiality} (via modes of operation, Sec.~06).
-\end{itemize}
-\end{column}
-\begin{column}{0.42\textwidth}
-\begin{tbox}{AES as a block cipher}
-\small
-$n=128$ bits (16 bytes)\\[2pt]
-$|K|\in\{128,192,256\}$ bits\\[2pt]
-$E_K=\fn{Cipher}(\cdot,\Nr,\fn{KeyExpansion}(K))$\\[4pt]
-$\fn{Cipher}$ is a permutation of $\{0,1\}^{128}$ for each key;
-$\fn{InvCipher}$ is its inverse.
-\end{tbox}
-\end{column}
-\end{columns}
-\src{Rijndael AES Implementation \S1; FIPS 197 \S3.1, \S5}
-\end{frame}
-
 \begin{frame}{History of AES (1/2): the competition}
 \footnotesize
 \renewcommand{\arraystretch}{1.18}
@@ -196,6 +168,34 @@ Jun 2003 & Approved for US government information up to SECRET (all key sizes); 
 \vskip4pt
 \begin{ibox}\small No practical attack is known against correctly implemented AES.\end{ibox}
 \src{Wikipedia: ``Advanced Encryption Standard''; FIPS 197; Rijndael AES Implementation \S5.1, \S5.4}
+\end{frame}
+
+\begin{frame}{Block ciphers}
+\begin{columns}[T]
+\begin{column}{0.55\textwidth}
+\begin{itemize}
+\item A \alert{block} is a bit sequence of fixed length $n$.
+\item A \alert{block cipher} is a map
+  \[ E:\ \mathcal{K}\times\{0,1\}^{n}\to\{0,1\}^{n}, \]
+  such that for every $K\in\mathcal{K}$ the function $E_K(\cdot)\triangleq E(K,\cdot)$
+  is a \alert{bijection} of $\{0,1\}^{n}$.
+\item Decryption is the inverse permutation: $D_K=E_K^{-1}$.
+\item A block cipher is a fundamental primitive and the basis of services
+  that provide \alert{confidentiality}.
+\end{itemize}
+\end{column}
+\begin{column}{0.42\textwidth}
+\begin{tbox}{AES as a block cipher}
+\small
+$n=128$ bits (16 bytes)\\[2pt]
+$|K|\in\{128,192,256\}$ bits\\[2pt]
+$E_K=\fn{Cipher}(\cdot,\Nr,\fn{KeyExpansion}(K))$\\[4pt]
+$\fn{Cipher}$ is a permutation of $\{0,1\}^{128}$ for each key;
+$\fn{InvCipher}$ is its inverse.
+\end{tbox}
+\end{column}
+\end{columns}
+\src{Rijndael AES Implementation \S1; FIPS 197 \S3.1, \S5}
 \end{frame}
 
 \begin{frame}[fragile]{AES parameters}
@@ -468,54 +468,6 @@ $\Nr+1$ calls of $\fn{AddRoundKey}$; the final round omits $\fn{MixColumns}$.
 \src{FIPS 197 \S5.1; figure: Byte Sub / Shift Row / Mix Column / Add Round Key (AES\_FRONT.png)}
 \end{frame}
 
-\begin{frame}[fragile]{Cipher(): pseudocode and C}
-\begin{columns}[T]
-\begin{column}{0.52\textwidth}
-\begin{pseudo}
-1 & \kw{procedure} \texttt{Cipher}($\mathit{in},\Nr,w$) \\
-2 & \ind $\mathit{state}\leftarrow \mathit{in}$ \\
-3 & \ind $\mathit{state}\leftarrow\fn{AddRoundKey}(\mathit{state},w[0..3])$ \\
-4 & \ind \kw{for} $\mathit{round}=1$ \kw{to} $\Nr-1$ \kw{do} \\
-5 & \ind\ind $\mathit{state}\leftarrow\fn{SubBytes}(\mathit{state})$ \\
-6 & \ind\ind $\mathit{state}\leftarrow\fn{ShiftRows}(\mathit{state})$ \\
-7 & \ind\ind $\mathit{state}\leftarrow\fn{MixColumns}(\mathit{state})$ \\
-8 & \ind\ind $\mathit{state}\leftarrow\fn{AddRoundKey}(\mathit{state},$ \\
-  & \ind\ind\ind $w[4\,\mathit{round}..4\,\mathit{round}{+}3])$ \\
-9 & \ind \kw{end for} \\
-10 & \ind $\mathit{state}\leftarrow\fn{SubBytes}(\mathit{state})$ \\
-11 & \ind $\mathit{state}\leftarrow\fn{ShiftRows}(\mathit{state})$ \\
-12 & \ind $\mathit{state}\leftarrow\fn{AddRoundKey}(\mathit{state},w[4\Nr..4\Nr{+}3])$ \\
-13 & \ind \kw{return} $\mathit{state}$ \\
-\end{pseudo}
-\end{column}
-\begin{column}{0.46\textwidth}
-%CODE utils.c
-\begin{tbox}{utils.c :: Cipher}
-\begin{lstlisting}
-void Cipher(u8* state, u8* ExpandedKey) {
-    // Initial round key addition.
-    AddRoundKey(state, ExpandedKey, 0);
-
-    // 9 main rounds.
-    for (u8 round = 1; round < NR; ++round) {
-        SubBytes(state);
-        ShiftRows(state);
-        MixColumns(state);
-        AddRoundKey(state, ExpandedKey, round);
-    }
-
-    // Final round (no MixColumns).
-    SubBytes(state);
-    ShiftRows(state);
-    AddRoundKey(state, ExpandedKey, 10);
-}
-\end{lstlisting}
-\end{tbox}
-\end{column}
-\end{columns}
-\src{FIPS 197 Alg.~1; AESFINAL/utils.c}
-\end{frame}
-
 \begin{frame}[fragile]{SubBytes}
 \begin{columns}[T]
 \begin{column}{0.52\textwidth}
@@ -528,7 +480,7 @@ Non-linear, invertible, applied \alert{independently} to every byte:
 \begin{itemize}
 \item Table: $\fn{SBox}(\{xy\})$ is the entry in row $x$, column $y$.
   E.g.\ $s_{r,c}=\hx{53}\Rightarrow s'_{r,c}=\hx{ed}$.
-\item Loop \alert{unrolled}: no loop-control overhead, sequential accesses (better spatial locality and prefetching).
+\item Loop \alert{unrolled}: no loop-control overhead, sequential accesses.
 \end{itemize}
 \end{column}
 \begin{column}{0.45\textwidth}
@@ -631,7 +583,7 @@ s'_{3,c}&=(\hx{03}\gm s_{0,c})\xor s_{1,c}\xor s_{2,c}\xor(\hx{02}\gm s_{3,c})
 \includegraphics[width=\linewidth]{images/MixColumns.png}\par\vskip6pt
 \raggedright\footnotesize
 \begin{itemize}
-\item Circulant matrix; first column $[\hx{02},\hx{01},\hx{01},\hx{03}]$; coefficients are cheap on 8-bit CPUs.
+\item Circulant matrix; first column $[\hx{02},\hx{01},\hx{01},\hx{03}]$.
 \item With ShiftRows it gives \alert{diffusion}: one input byte affects 4 output bytes.
 \end{itemize}
 \end{column}
@@ -655,7 +607,6 @@ a_0\xor\hx{02}\gm(a_0\xor a_1)\xor t
 \end{align*}
 \begin{itemize}
 \item The \alert{only} field multiplication is $\fn{xtime}$.
-\item Per column: 1 four-way XOR, 4 xtime, 8 XOR.
 \end{itemize}
 \end{column}
 \begin{column}{0.45\textwidth}
@@ -687,48 +638,6 @@ void MixColumns(u8* s) {
 \src{FIPS 197 \S5.1.3; Rijndael AES Implementation \S3.3; AESFINAL/utils.c}
 \end{frame}
 
-\begin{frame}[fragile]{AddRoundKey}
-\begin{columns}[T]
-\begin{column}{0.56\textwidth}
-\footnotesize
-The round key (4 words of the key schedule) is XORed into the 4 columns:
-\[ [s'_{0,c},s'_{1,c},s'_{2,c},s'_{3,c}]=[s_{0,c},s_{1,c},s_{2,c},s_{3,c}]\xor w[4\cdot\mathit{round}+c] \]
-for $0\le c<4$ and $0\le\mathit{round}\le\Nr$.\\[3pt]
-\centering
-\includegraphics[width=0.9\linewidth]{images/Round.png}\par
-\raggedright\scriptsize
-\begin{itemize}
-\item In the figure $l=4\cdot\mathit{round}$. Self-inverse: $(s\xor k)\xor k=s$.
-\item One 128-bit XOR handles all 16 bytes: \alert{SIMD (SSE2)}.
-\end{itemize}
-\end{column}
-\begin{column}{0.41\textwidth}
-\codesmall
-%CODE utils.c
-\begin{tbox}{utils.c :: AddRoundKey}
-\begin{lstlisting}
-void AddRoundKey(u8* state, u8* ExpandedKey,
-                 u8 round) {
-    // Load 16 bytes from the state and
-    // the corresponding round key
-    __m128i* stateVec = (__m128i*)state;
-    __m128i* roundKeyVec =
-        (__m128i*)(ExpandedKey + 16 * round);
-
-    // XOR 16 bytes at once
-    *stateVec = _mm_xor_si128(*stateVec,
-                              *roundKeyVec);
-}
-\end{lstlisting}
-\end{tbox}
-\codenormal
-\vskip3pt
-{\footnotesize Round key $\mathit{round}$ starts at byte $16\cdot\mathit{round}$ of \texttt{ExpandedKey}.}
-\end{column}
-\end{columns}
-\src{FIPS 197 \S5.1.4 (Eq.~5.9), Fig.~5; Rijndael AES Implementation \S3.4; AESFINAL/utils.c}
-\end{frame}
-
 \begin{frame}[fragile]{KeyExpansion: algorithm}
 \begin{columns}[T]
 \begin{column}{0.60\textwidth}
@@ -751,7 +660,6 @@ void AddRoundKey(u8* state, u8* ExpandedKey,
 \item Lines 6--7 apply to AES-256 only; AES-128 uses $\Nk=4$.
 \end{itemize}
 \vskip2pt\scriptsize
-AES-128, $l=0,4,\dots,36$: $w[l{+}4]=w[l]\xor\fn{SubWord}(\fn{RotWord}(w[l{+}3]))\xor\fn{Rcon}[\tfrac{l+4}{4}]$, and $w[l{+}k]=w[l{+}k{-}4]\xor w[l{+}k{-}1]$ for $k=5,6,7$.
 \end{column}
 \begin{column}{0.37\textwidth}
 \footnotesize\centering
@@ -823,56 +731,97 @@ void KeyExpansion(u8* key, u8* w) {
 \src{FIPS 197 Fig.~6; Rijndael AES Implementation \S3.5; AESFINAL/utils.c}
 \end{frame}
 
-% ============================================================
-\section{DECRYPTION}
-
-\begin{frame}[fragile]{InvCipher()}
+\begin{frame}[fragile]{AddRoundKey}
 \begin{columns}[T]
-\begin{column}{0.52\textwidth}
-\small
-Invert every transformation and run them in \alert{reverse order}:\par\vskip3pt
-\begin{pseudo}
-1 & \kw{procedure} \texttt{InvCipher}($\mathit{in},\Nr,w$) \\
-2 & \ind $\mathit{state}\leftarrow\fn{AddRoundKey}(\mathit{in},w[4\Nr..4\Nr{+}3])$ \\
-3 & \ind \kw{for} $\mathit{round}=\Nr-1$ \kw{downto} $1$ \kw{do} \\
-4 & \ind\ind $\fn{InvShiftRows}$ \\
-5 & \ind\ind $\fn{InvSubBytes}$ \\
-6 & \ind\ind $\fn{AddRoundKey}(\cdot,w[4\,\mathit{round}..4\,\mathit{round}{+}3])$ \\
-7 & \ind\ind $\fn{InvMixColumns}$ \\
-8 & \ind $\fn{InvShiftRows};\ \fn{InvSubBytes}$ \\
-9 & \ind $\fn{AddRoundKey}(\cdot,w[0..3])$ \\
-\end{pseudo}
-\vskip3pt
+\begin{column}{0.56\textwidth}
 \footnotesize
-$\fn{AddRoundKey}$ is its own inverse. Decryption keeps the encryption
-key schedule $w$ and uses the round keys in reverse order.
+The round key (4 words of the key schedule) is XORed into the 4 columns:
+\[ [s'_{0,c},s'_{1,c},s'_{2,c},s'_{3,c}]=[s_{0,c},s_{1,c},s_{2,c},s_{3,c}]\xor w[4\cdot\mathit{round}+c] \]
+for $0\le c<4$ and $0\le\mathit{round}\le\Nr$.\\[3pt]
+\centering
+\includegraphics[width=0.9\linewidth]{images/Round.png}\par
+\raggedright\scriptsize
+\begin{itemize}
+\item In the figure $l=4\cdot\mathit{round}$. Self-inverse: $(s\xor k)\xor k=s$.
+\item One 128-bit XOR handles all 16 bytes: \alert{SIMD (SSE2)}.
+\end{itemize}
 \end{column}
-\begin{column}{0.45\textwidth}
+\begin{column}{0.41\textwidth}
+\codesmall
 %CODE utils.c
-\begin{tbox}{utils.c :: InvCipher}
+\begin{tbox}{utils.c :: AddRoundKey}
 \begin{lstlisting}
-void InvCipher( u8* state, u8* ExpandedKey) {
-    AddRoundKey(state, ExpandedKey, 10);
+void AddRoundKey(u8* state, u8* ExpandedKey,
+                 u8 round) {
+    // Load 16 bytes from the state and
+    // the corresponding round key
+    __m128i* stateVec = (__m128i*)state;
+    __m128i* roundKeyVec =
+        (__m128i*)(ExpandedKey + 16 * round);
 
-    for (u8 round = NR-1; round > 0; round--) {
-        InvShiftRows(state);
-        InvSubBytes(state);
-        AddRoundKey(state, ExpandedKey, round);
-        InvMixColumns(state);
-    }
-
-    InvShiftRows(state);
-    InvSubBytes(state);
-    AddRoundKey(state, ExpandedKey, 0);
+    // XOR 16 bytes at once
+    *stateVec = _mm_xor_si128(*stateVec,
+                              *roundKeyVec);
 }
 \end{lstlisting}
 \end{tbox}
+\codenormal
 \vskip3pt
-{\footnotesize This is the function called by \texttt{ecb\_decrypt} and \texttt{cbc\_decrypt}.}
 \end{column}
 \end{columns}
-\src{FIPS 197 \S5.3, Alg.~3; Rijndael AES Implementation \S4; AESFINAL/utils.c}
+\src{FIPS 197 \S5.1.4 (Eq.~5.9), Fig.~5; Rijndael AES Implementation \S3.4; AESFINAL/utils.c}
 \end{frame}
+
+\begin{frame}[fragile]{Cipher(): pseudocode and C}
+\begin{columns}[T]
+\begin{column}{0.52\textwidth}
+\begin{pseudo}
+1 & \kw{procedure} \texttt{Cipher}($\mathit{in},\Nr,w$) \\
+2 & \ind $\mathit{state}\leftarrow \mathit{in}$ \\
+3 & \ind $\mathit{state}\leftarrow\fn{AddRoundKey}(\mathit{state},w[0..3])$ \\
+4 & \ind \kw{for} $\mathit{round}=1$ \kw{to} $\Nr-1$ \kw{do} \\
+5 & \ind\ind $\mathit{state}\leftarrow\fn{SubBytes}(\mathit{state})$ \\
+6 & \ind\ind $\mathit{state}\leftarrow\fn{ShiftRows}(\mathit{state})$ \\
+7 & \ind\ind $\mathit{state}\leftarrow\fn{MixColumns}(\mathit{state})$ \\
+8 & \ind\ind $\mathit{state}\leftarrow\fn{AddRoundKey}(\mathit{state},$ \\
+  & \ind\ind\ind $w[4\,\mathit{round}..4\,\mathit{round}{+}3])$ \\
+9 & \ind \kw{end for} \\
+10 & \ind $\mathit{state}\leftarrow\fn{SubBytes}(\mathit{state})$ \\
+11 & \ind $\mathit{state}\leftarrow\fn{ShiftRows}(\mathit{state})$ \\
+12 & \ind $\mathit{state}\leftarrow\fn{AddRoundKey}(\mathit{state},w[4\Nr..4\Nr{+}3])$ \\
+13 & \ind \kw{return} $\mathit{state}$ \\
+\end{pseudo}
+\end{column}
+\begin{column}{0.46\textwidth}
+%CODE utils.c
+\begin{tbox}{utils.c :: Cipher}
+\begin{lstlisting}
+void Cipher(u8* state, u8* ExpandedKey) {
+    // Initial round key addition.
+    AddRoundKey(state, ExpandedKey, 0);
+
+    // 9 main rounds.
+    for (u8 round = 1; round < NR; ++round) {
+        SubBytes(state);
+        ShiftRows(state);
+        MixColumns(state);
+        AddRoundKey(state, ExpandedKey, round);
+    }
+
+    // Final round (no MixColumns).
+    SubBytes(state);
+    ShiftRows(state);
+    AddRoundKey(state, ExpandedKey, 10);
+}
+\end{lstlisting}
+\end{tbox}
+\end{column}
+\end{columns}
+\src{FIPS 197 Alg.~1; AESFINAL/utils.c}
+\end{frame}
+
+% ============================================================
+\section{DECRYPTION}
 
 \begin{frame}[fragile]{InvShiftRows}
 \begin{columns}[T]
@@ -1119,6 +1068,55 @@ with a 256-byte S-box.
 \src{Rijndael AES Implementation \S5.1; Osvik, Shamir, Tromer, J.\ Cryptology 23 (2010)}
 \end{frame}
 \end{comment}
+
+\begin{frame}[fragile]{InvCipher()}
+\begin{columns}[T]
+\begin{column}{0.52\textwidth}
+\small
+Invert every transformation and run them in \alert{reverse order}:\par\vskip3pt
+\begin{pseudo}
+1 & \kw{procedure} \texttt{InvCipher}($\mathit{in},\Nr,w$) \\
+2 & \ind $\mathit{state}\leftarrow\fn{AddRoundKey}(\mathit{in},w[4\Nr..4\Nr{+}3])$ \\
+3 & \ind \kw{for} $\mathit{round}=\Nr-1$ \kw{downto} $1$ \kw{do} \\
+4 & \ind\ind $\fn{InvShiftRows}$ \\
+5 & \ind\ind $\fn{InvSubBytes}$ \\
+6 & \ind\ind $\fn{AddRoundKey}(\cdot,w[4\,\mathit{round}..4\,\mathit{round}{+}3])$ \\
+7 & \ind\ind $\fn{InvMixColumns}$ \\
+8 & \ind $\fn{InvShiftRows};\ \fn{InvSubBytes}$ \\
+9 & \ind $\fn{AddRoundKey}(\cdot,w[0..3])$ \\
+\end{pseudo}
+\vskip3pt
+\footnotesize
+$\fn{AddRoundKey}$ is its own inverse. Decryption keeps the encryption
+key schedule $w$ and uses the round keys in reverse order.
+\end{column}
+\begin{column}{0.45\textwidth}
+%CODE utils.c
+\begin{tbox}{utils.c :: InvCipher}
+\begin{lstlisting}
+void InvCipher( u8* state, u8* ExpandedKey) {
+    AddRoundKey(state, ExpandedKey, 10);
+
+    for (u8 round = NR-1; round > 0; round--) {
+        InvShiftRows(state);
+        InvSubBytes(state);
+        AddRoundKey(state, ExpandedKey, round);
+        InvMixColumns(state);
+    }
+
+    InvShiftRows(state);
+    InvSubBytes(state);
+    AddRoundKey(state, ExpandedKey, 0);
+}
+\end{lstlisting}
+\end{tbox}
+\vskip3pt
+{\footnotesize This is the function called by \texttt{ecb\_decrypt} and \texttt{cbc\_decrypt}.}
+\end{column}
+\end{columns}
+\src{FIPS 197 \S5.3, Alg.~3; Rijndael AES Implementation \S4; AESFINAL/utils.c}
+\end{frame}
+
 % ============================================================
 \section{MODES OF OPERATION \\ IMPLEMENTATION}
 
@@ -1350,7 +1348,7 @@ Keystream from encrypting successive counter values ($\ell=128$):
 \[ \begin{cases} T_i=(ctr+i-1)\bmod 2^{\ell}\\ c_i=E_K(T_i)\xor m_i,\ i\ge1\end{cases} \]
 Decryption: $m_i=E_K(T_i)\xor c_i$.
 \begin{itemize}\footnotesize
-\item $ctr$ = 32-bit block counter $\Vert$ 96-bit non-repeating nonce, starting at 0.
+\item $ctr$ = 96-bit non-repeating nonce $\Vert$ 32-bit block counter, starting at 0.
 \item Blocks are independent: \alert{parallel} encryption and decryption, pre-processing, random access.
 \item Software and hardware efficient; marked as the best choice among the modes in Rijndael AES Implementation.
 \end{itemize}
@@ -1364,7 +1362,7 @@ void ctr(FILE *ifile, FILE *ofile, u8* ExpandedKey,
     generate_iv();
     if(choice == 'e') fwrite(IV, 1, 16, ofile);
     else fread(IV, 1, 16, ifile);
-    IV[0]=IV[1]=IV[2]=IV[3]=0x00;
+    IV[15]=IV[14]=IV[13]=IV[12]=0x00;
     u8 input[16], in_block[16];
     u8 bytes_read;
     while ((bytes_read = fread(in_block, 1, 16, ifile)) > 0) {
@@ -1385,19 +1383,28 @@ void ctr(FILE *ifile, FILE *ofile, u8* ExpandedKey,
 \end{frame}
 
 \begin{frame}{Modes: comparison}
-\centering\footnotesize
-\renewcommand{\arraystretch}{1.25}
+\centering
+\renewcommand{\arraystretch}{1}
+\setlength{\tabcolsep}{2pt}
+\newlength{\cellh}\setlength{\cellh}{27mm}
+\begin{tabular}{@{}c@{\hspace{6mm}}c@{}}
+{\scriptsize\textbf{ECB}} & {\scriptsize\textbf{CBC}}\\[1pt]
+\includegraphics[height=\cellh]{images/ECB_diagram.png} & \includegraphics[height=\cellh]{images/CBC_diagram.png}\\[5pt]
+{\scriptsize\textbf{CTR}} & {\scriptsize\textbf{comparison}}\\[1pt]
+\includegraphics[height=\cellh]{images/CTR_diagram.png} &
+\raisebox{\dimexpr0.5\cellh\relax}{\parbox[c][\cellh][c]{0.50\textwidth}{\centering\fontsize{5.6}{7}\selectfont
 \begin{tabular}{@{}lcccccc@{}}
 \toprule
-mode & uses & padding & IV / nonce & par.\ enc. & par.\ dec. & keystream pre-computable \\
+mode & uses & padding & IV/nonce & par.\,enc. & par.\,dec. & keystream \\
 \midrule
-ECB & $E_K$ / $D_K$ & yes & none & yes & yes & -- \\
-CBC & $E_K$ / $D_K$ & yes & random IV & no & yes & -- \\
+ECB & $E_K/D_K$ & yes & none & yes & yes & -- \\
+CBC & $E_K/D_K$ & yes & random IV & no & yes & -- \\
 CTR & $E_K$ only & no & unique nonce & yes & yes & yes \\
 \bottomrule
+\end{tabular}\par\vskip3pt
+\raggedright\fontsize{5.4}{6.6}\selectfont
+ECB leaks equality of blocks; CBC/OFB/CTR hide it with a fresh IV. None of the modes authenticates data: use authenticated encryption against active attackers. ``keystream'' = pre-computable.}}
 \end{tabular}
-\vskip8pt
-\raggedright
 \src{Rijndael AES Implementation \S6; NIST SP 800-38A}
 \end{frame}
 
